@@ -3,3 +3,8 @@
 *.db
 
 .idea/
+.vscode/
+
+build/bin
+node_modules
+frontend/dist
