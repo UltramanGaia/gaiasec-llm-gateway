@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Expand, Fold, Monitor, Folder, Connection, Warning, Document } from '@element-plus/icons-vue'
+import { Expand, Fold, Monitor, Folder, Connection, Warning, Document, User, ArrowDown } from '@element-plus/icons-vue'
 import axios from 'axios'
 
 const route = useRoute()

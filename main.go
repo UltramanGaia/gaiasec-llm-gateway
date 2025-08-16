@@ -24,10 +24,24 @@ type App struct {
 
 // Provider API handlers
 func (app *App) createProvider(w http.ResponseWriter, r *http.Request) {
-	var provider models.Provider
-	if err := json.NewDecoder(r.Body).Decode(&provider); err != nil {
+	// 使用临时结构体来避免ID类型不匹配问题
+	type providerInput struct {
+		Name    string `json:"name"`
+		APIKey  string `json:"apiKey"`
+		BaseURL string `json:"baseURL"`
+	}
+
+	var input providerInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// 创建Provider结构体
+	provider := models.Provider{
+		Name:    input.Name,
+		APIKey:  input.APIKey,
+		BaseURL: input.BaseURL,
 	}
 
 	if err := app.DB.Create(&provider).Error; err != nil {
