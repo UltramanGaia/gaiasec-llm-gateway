@@ -99,7 +99,7 @@ onMounted(() => {
       <el-table-column prop="alias" label="Alias" width="180"></el-table-column>
       <el-table-column prop="providerID" label="Provider" width="180">
         <template #default="{ row }">
-          <el-tag>{{ providers.find(x => x.id === row.providerID)['name'] }}</el-tag>
+          <el-tag>{{ providers.find(x => x.id === row.providerID)?.name }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="modelName" label="Model Name"></el-table-column>

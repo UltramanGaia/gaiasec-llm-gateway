@@ -3,7 +3,6 @@ import Layout from '../components/Layout.vue';
 import Dashboard from '../views/Dashboard.vue';
 import Providers from '../views/Providers.vue';
 import ModelMappings from '../views/ModelMappings.vue';
-import Credentials from '../views/Credentials.vue';
 import Logs from '../views/Logs.vue';
 import Login from '../views/Login.vue';
 import axios from 'axios';
@@ -49,15 +48,6 @@ const routes = [
         component: ModelMappings,
         meta: {
           title: 'Model Mappings',
-          requiresAuth: true
-        }
-      },
-      {
-        path: 'credentials',
-        name: 'Credentials',
-        component: Credentials,
-        meta: {
-          title: 'Credentials',
           requiresAuth: true
         }
       },

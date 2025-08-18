@@ -21,7 +21,6 @@ const breadcrumbs = computed(() => {
     '/': { name: '仪表板', path: '/' },
     '/providers': { name: '提供商', path: '/providers' },
     '/model-mappings': { name: '模型映射', path: '/model-mappings' },
-    '/credentials': { name: '凭证管理', path: '/credentials' },
     '/logs': { name: '请求日志', path: '/logs' }
   }
   
@@ -104,15 +103,6 @@ const handleCommand = async (command) => {
           </template>
         </el-menu-item>
 
-        <el-menu-item index="/credentials">
-          <el-tooltip v-if="isSidebarCollapsed" effect="dark" content="凭证管理" placement="right">
-            <el-icon><Warning /></el-icon>
-          </el-tooltip>
-          <template v-else>
-            <el-icon><Warning /></el-icon>
-            <span>凭证管理</span>
-          </template>
-        </el-menu-item>
         <el-menu-item index="/logs">
           <el-tooltip v-if="isSidebarCollapsed" effect="dark" content="请求日志" placement="right">
             <el-icon><Document /></el-icon>
