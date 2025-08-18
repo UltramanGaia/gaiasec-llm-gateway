@@ -1,19 +1,29 @@
 <script setup>
-import { ref, onMounted } from 'vue';
-import { ElDialog, ElForm, ElFormItem, ElInput, ElSelect, ElOption, ElButton, ElTable, ElTableColumn, ElMessage } from 'element-plus';
-import { modelMappingsAPI, providersAPI } from '../api';
+import {onMounted, ref} from 'vue';
+import {
+  ElButton,
+  ElDialog,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElMessage,
+  ElOption,
+  ElSelect,
+  ElTable,
+  ElTableColumn
+} from 'element-plus';
+import {modelMappingsAPI, providersAPI} from '../api';
 
 const modelMappings = ref([]);
 const providers = ref([]);
 const dialogVisible = ref(false);
 const isEditing = ref(false);
-const currentMapping = ref({ id: '', alias: '', providerID: '', modelName: '' });
+const currentMapping = ref({ id: 0, alias: '', providerID: '', modelName: '' });
 const formRef = ref(null);
 
 const fetchModelMappings = async () => {
   try {
-    const data = await modelMappingsAPI.getModelMappings();
-    modelMappings.value = data;
+    modelMappings.value = await modelMappingsAPI.getModelMappings();
   } catch (error) {
     console.error('Failed to fetch model mappings:', error);
     ElMessage.error('Failed to load model mappings');
@@ -22,8 +32,7 @@ const fetchModelMappings = async () => {
 
 const fetchProviders = async () => {
   try {
-    const data = await providersAPI.getProviders();
-    providers.value = data;
+    providers.value = await providersAPI.getProviders();
   } catch (error) {
     console.error('Failed to fetch providers:', error);
     ElMessage.error('Failed to load providers');
@@ -32,7 +41,7 @@ const fetchProviders = async () => {
 
 const openAddDialog = () => {
   isEditing.value = false;
-  currentMapping.value = { id: '', alias: '', providerID: '', modelName: '' };
+  currentMapping.value = { id: 0, alias: '', providerID: '', modelName: '' };
   dialogVisible.value = true;
 };
 
@@ -49,6 +58,7 @@ const saveMapping = async () => {
       await modelMappingsAPI.updateModelMapping(currentMapping.value.id, currentMapping.value);
       ElMessage.success('Model mapping updated successfully');
     } else {
+      console.log(currentMapping.value);
       await modelMappingsAPI.addModelMapping(currentMapping.value);
       ElMessage.success('Model mapping added successfully');
     }
@@ -87,7 +97,11 @@ onMounted(() => {
     <el-table :data="modelMappings" style="width: 100%">
       <el-table-column prop="id" label="ID" width="80"></el-table-column>
       <el-table-column prop="alias" label="Alias" width="180"></el-table-column>
-      <el-table-column prop="Provider.name" label="Provider" width="180"></el-table-column>
+      <el-table-column prop="providerID" label="Provider" width="180">
+        <template #default="{ row }">
+          <el-tag>{{ providers.find(x => x.id === row.providerID)['name'] }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="modelName" label="Model Name"></el-table-column>
       <el-table-column label="Actions" width="150" fixed="right">
         <template #default="{ row }">{{ row.id }}
@@ -97,7 +111,7 @@ onMounted(() => {
       </el-table-column>
     </el-table>
 
-    <el-dialog :title="isEditing ? 'Edit Model Mapping' : 'Add Model Mapping'" :visible.sync="dialogVisible" width="500px">
+    <el-dialog :title="isEditing ? 'Edit Model Mapping' : 'Add Model Mapping'" v-model="dialogVisible" width="500px">
       <el-form ref="formRef" :model="currentMapping" label-width="100px">
         <el-form-item label="Alias" prop="alias" :rules="[{ required: true, message: 'Please input model alias', trigger: 'blur' }]">
           <el-input v-model="currentMapping.alias"></el-input>

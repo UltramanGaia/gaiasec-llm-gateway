@@ -1,8 +1,20 @@
 <script setup>
-import { ref, onMounted } from 'vue';
-import { ElDialog, ElForm, ElFormItem, ElInput, ElButton, ElTable, ElTableColumn, ElMessage, ElSelect, ElOption, ElTooltip } from 'element-plus';
-import { providersAPI } from '../api';
-import { CopyDocument, Check } from '@element-plus/icons-vue';
+import {onMounted, ref} from 'vue';
+import {
+  ElButton,
+  ElDialog,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElMessage,
+  ElOption,
+  ElSelect,
+  ElTable,
+  ElTableColumn,
+  ElTooltip
+} from 'element-plus';
+import {providersAPI} from '../api';
+import {CopyDocument} from '@element-plus/icons-vue';
 
 const providers = ref([]);
 const dialogVisible = ref(false);
@@ -36,17 +48,8 @@ const selectDefaultProvider = (providerName) => {
 
 const fetchProviders = async () => {
   try {
-    const data = await providersAPI.getProviders();
     // 转换数据字段命名：将大驼峰转换为小驼峰
-    providers.value = data.map(provider => ({
-      id: provider.ID,
-      name: provider.Name,
-      apiKey: provider.APIKey,
-      baseURL: provider.BaseURL,
-      createdAt: provider.CreatedAt,
-      updatedAt: provider.UpdatedAt,
-      deletedAt: provider.DeletedAt
-    }));
+    providers.value = await providersAPI.getProviders();
   } catch (error) {
     console.error('Failed to fetch providers:', error);
     ElMessage.error('Failed to load providers');
@@ -146,7 +149,7 @@ onMounted(() => {
     <el-table :data="providers" style="width: 100%">
       <el-table-column prop="id" label="ID" width="80"></el-table-column>
       <el-table-column prop="name" label="Name" width="180"></el-table-column>
-      <el-table-column prop="baseURL" label="Base URL"></el-table-column>
+      <el-table-column prop="baseUrl" label="Base URL"></el-table-column>
       <el-table-column prop="apiKey" label="API Key" width="280">
         <template #default="{ row }">
           <div style="display: flex; align-items: center;">

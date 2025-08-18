@@ -1,11 +1,12 @@
 package models
 
-import "gorm.io/gorm"
+import "time"
 
 type ModelMapping struct {
-	gorm.Model
-	Alias      string `gorm:"unique;not null"` // User-facing name
-	ProviderID uint
-	Provider   Provider `gorm:"foreignKey:ProviderID"`
-	ModelName  string   `gorm:"not null"` // Actual provider model name
+	ID         uint      `gorm:"primarykey" json:"id,omitempty"`
+	CreatedAt  time.Time `json:"createdAt,omitempty"`
+	UpdatedAt  time.Time `json:"updatedAt,omitempty"`
+	Alias      string    `gorm:"unique;not null" json:"alias"` // User-facing name
+	ProviderID uint      `json:"providerID"`
+	ModelName  string    `gorm:"not null" json:"modelName"` // Actual provider model name
 }

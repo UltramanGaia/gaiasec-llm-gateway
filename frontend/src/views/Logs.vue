@@ -27,9 +27,8 @@ const fetchLogs = async () => {
       if (!params[key]) delete params[key];
     });
 
-    const data = await logsAPI.getLogs(params);
-    logs.value = data.items || data;
-    totalLogs.value = data.total || logs.value.length;
+    logs.value = await logsAPI.getLogs(params);
+    totalLogs.value = logs.value.length;
   } catch (error) {
     console.error('Failed to fetch logs:', error);
     ElMessage.error('Failed to load logs');
@@ -45,6 +44,22 @@ const fetchModels = async () => {
   } catch (error) {
     console.error('Failed to fetch models:', error);
   }
+};
+
+// 格式化时间，只显示日期、时、分、秒
+const formatDateTime = (dateTime) => {
+  if (!dateTime) return '';
+  const date = new Date(dateTime);
+  // 获取年、月、日
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  // 获取时、分、秒
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  // 组合成日期时间字符串
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
 const viewLogDetails = (log) => {
@@ -108,7 +123,11 @@ onMounted(() => {
       <el-table-column prop="id" label="ID" width="80"></el-table-column>
       <el-table-column prop="modelName" label="Model" width="150"></el-table-column>
       <el-table-column prop="userToken" label="User Token" width="200"></el-table-column>
-      <el-table-column prop="createdAt" label="Created At" width="180"></el-table-column>
+      <el-table-column prop="createdAt" label="Created At" width="180">
+        <template #default="{ row }">
+          <span>{{ formatDateTime(row.createdAt) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="Actions" width="100" fixed="right">
         <template #default="{ row }">{{ row.id }}
           <el-button size="small" @click="viewLogDetails(row)">View</el-button>
@@ -128,7 +147,7 @@ onMounted(() => {
       ></el-pagination>
     </div>
 
-    <el-dialog title="Log Details" :visible.sync="dialogVisible" width="800px" v-if="currentLog">
+    <el-dialog title="Log Details" v-model="dialogVisible" width="800px" v-if="currentLog">
       <div class="log-details">
         <div class="log-header">
           <div class="log-item"><strong>ID:</strong> {{ currentLog.id }}</div>

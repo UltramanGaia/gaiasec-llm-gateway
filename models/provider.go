@@ -1,15 +1,12 @@
 package models
 
-import (
-	"time"
-
-	"gorm.io/gorm"
-)
+import "time"
 
 type Provider struct {
-	gorm.Model
-	Name      string `gorm:"unique;not null"`
-	APIKey    string `gorm:"not null"`
-	BaseURL   string `gorm:"not null"`
-	CreatedAt time.Time
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Name      string    `gorm:"unique;not null" json:"name"`
+	APIKey    string    `gorm:"not null" json:"apiKey"`
+	BaseURL   string    `gorm:"not null" json:"baseUrl"`
 }

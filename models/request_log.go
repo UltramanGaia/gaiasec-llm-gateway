@@ -1,16 +1,13 @@
 package models
 
-import (
-	"time"
-
-	"gorm.io/gorm"
-)
+import "time"
 
 type RequestLog struct {
-	gorm.Model
-	UserToken string    `gorm:"index"`
-	ModelName string    `gorm:"index"`
-	Request   string    `gorm:"type:text"`
-	Response  string    `gorm:"type:text"`
-	CreatedAt time.Time `gorm:"index"`
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	UserToken string    `gorm:"index" json:"userToken"`
+	ModelName string    `gorm:"index" json:"modelName"`
+	Request   string    `gorm:"type:text" json:"request"`
+	Response  string    `gorm:"type:text" json:"response"`
 }
