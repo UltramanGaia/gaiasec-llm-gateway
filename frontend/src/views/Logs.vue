@@ -126,13 +126,42 @@ const highlightJson = (jsonString) => {
     return jsonString;
   }
   try {
-    // 简单的JSON语法高亮
-    return jsonString
-      .replace(/"([^"]*)":/g, '<span class="json-key">"$1":</span>')
-      .replace(/"([^"]*)"/g, '<span class="json-string">"$1"</span>')
-      .replace(/\b(true|false)\b/g, '<span class="json-boolean">$1</span>')
-      .replace(/\b(null)\b/g, '<span class="json-null">$1</span>')
-      .replace(/\b(\d+(\.\d+)?)\b/g, '<span class="json-number">$1</span>');
+    // 改进的JSON语法高亮实现
+    // 首先确保JSON格式正确
+    const formattedJson = formatJson(jsonString);
+    
+    // 更安全的高亮实现，避免标签嵌套问题
+    // 1. 先替换键名 ("key":)
+    let highlighted = formattedJson.replace(
+      /"([^"]*)":/g,
+      '<span class="json-key">"$1":</span>'
+    );
+    
+    // 2. 然后替换字符串值 ("value")
+    highlighted = highlighted.replace(
+      /<\/span>\s*"([^"]*)"/g,
+      '</span> <span class="json-string">"$1"</span>'
+    );
+    
+    // 3. 替换布尔值
+    highlighted = highlighted.replace(
+      /\b(true|false)\b/g,
+      '<span class="json-boolean">$1</span>'
+    );
+    
+    // 4. 替换null值
+    highlighted = highlighted.replace(
+      /\b(null)\b/g,
+      '<span class="json-null">$1</span>'
+    );
+    
+    // 5. 替换数字
+    highlighted = highlighted.replace(
+      /\b(\d+(\.\d+)?)\b/g,
+      '<span class="json-number">$1</span>'
+    );
+    
+    return highlighted;
   } catch (error) {
     console.error('Failed to highlight JSON:', error);
     return jsonString;
@@ -188,7 +217,7 @@ const getLastMessageContent = (requestString) => {
         .filter(msg => msg.role === 'user')
         .pop();
       const contents = lastUserMessage.content
-      const content = contents[contents.length - 1]
+      const content = contents[0]['text']
       if(content.length > 50) {
         return content.substring(0, 50) + '...';
       }
@@ -277,8 +306,8 @@ onMounted(() => {
       <el-table-column label="Message Content" min-width="200">
         <template #default="{ row }">
           <div class="message-content">
-            {{ getLastMessageContent(row.request).length > 15 ? 
-                getLastMessageContent(row.request).substring(0, 15) + '...' : 
+            {{ getLastMessageContent(row.request).length > 50 ? 
+                getLastMessageContent(row.request).substring(0, 50) + '...' : 
                 getLastMessageContent(row.request) }}
           </div>
           <!-- <el-tooltip placement="top" :content="getLastMessageContent(row.request)" effect="light">
