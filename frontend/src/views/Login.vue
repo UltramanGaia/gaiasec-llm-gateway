@@ -55,8 +55,8 @@ const loginFormRef = ref(null)
 const loading = ref(false)
 
 const loginForm = reactive({
-  username: '',
-  password: ''
+  username: 'admin',
+  password: 'admin123'
 })
 
 const loginRules = {
@@ -106,7 +106,7 @@ const handleLogin = async () => {
   }
 }
 
-// handleLogin()
+handleLogin()
 </script>
 
 <style scoped>

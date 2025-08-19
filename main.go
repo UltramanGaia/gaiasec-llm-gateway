@@ -70,6 +70,7 @@ func main() {
 	providerHandler := handlers.NewProviderHandler(db)
 	modelMappingHandler := handlers.NewModelMappingHandler(db)
 	logHandler := handlers.NewLogHandler(db)
+	statsHandler := handlers.NewStatsHandler(db)
 
 	// 登录路由不需要认证
 	http.HandleFunc("/api/login", authHandler.Login)
@@ -95,6 +96,33 @@ func main() {
 			modelMappingHandler.GetModelMappings(w, r)
 		} else if r.Method == "POST" {
 			modelMappingHandler.CreateModelMapping(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// Stats API routes with authentication
+	http.HandleFunc("/api/stats", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			statsHandler.GetStats(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// Provider stats API route with authentication
+	http.HandleFunc("/api/stats/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			statsHandler.GetProviderStats(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// Model stats API route with authentication
+	http.HandleFunc("/api/stats/models", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			statsHandler.GetModelStats(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
