@@ -3,16 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+
 	"github.com/UltramanGaia/llm-gateway/handlers"
 	"github.com/UltramanGaia/llm-gateway/models"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"io"
-	"net/http"
-	"os"
-	"strings"
 )
 
 func initDB() (*gorm.DB, error) {
@@ -69,7 +70,6 @@ func main() {
 	providerHandler := handlers.NewProviderHandler(db)
 	modelMappingHandler := handlers.NewModelMappingHandler(db)
 	logHandler := handlers.NewLogHandler(db)
-	credentialHandler := handlers.NewCredentialHandler()
 
 	// 登录路由不需要认证
 	http.HandleFunc("/api/login", authHandler.Login)
@@ -100,11 +100,34 @@ func main() {
 		}
 	}))
 
-	// Credential API routes with authentication
-	http.HandleFunc("/api/credentials/generate", handlers.JWTAuthMiddleware(credentialHandler.GenerateCredential))
-
 	// Log API routes with authentication
-	http.HandleFunc("/api/logs", handlers.JWTAuthMiddleware(logHandler.GetLogs))
+	http.HandleFunc("/api/logs", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			logHandler.GetLogs(w, r)
+		} else if r.Method == "DELETE" {
+			logHandler.ClearLogs(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	// Log detail API route with authentication
+	http.HandleFunc("/api/logs/", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			pathParts := strings.Split(r.URL.Path, "/")
+			if len(pathParts) >= 4 {
+				id := pathParts[3]
+				if id != "" {
+					r.URL.RawQuery = "id=" + id
+					logHandler.GetLogDetail(w, r)
+					return
+				}
+			}
+			http.Error(w, "Log ID is required", http.StatusBadRequest)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 
 	// Frontend static files
 	// 使用文件服务器提供静态文件

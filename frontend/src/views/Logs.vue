@@ -14,6 +14,66 @@ const filters = reactive({
   page: 1,
   pageSize: 10
 });
+
+// 模拟日志数据，用于展示效果
+const mockLogs = [
+  {
+    id: 1,
+    modelName: 'gpt-3.5-turbo',
+    userToken: 'user_123456',
+    createdAt: new Date().toISOString(),
+    request: JSON.stringify({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Hello, how are you?' }
+      ],
+      max_tokens: 100
+    }),
+    response: JSON.stringify({
+      id: 'chatcmpl-123',
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: 'gpt-3.5-turbo',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: 'I am doing well, thank you! How can I assist you today?'
+          },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: {
+        prompt_tokens: 26,
+        completion_tokens: 19,
+        total_tokens: 45
+      }
+    })
+  },
+  {
+    id: 2,
+    modelName: 'claude-2',
+    userToken: 'user_654321',
+    createdAt: new Date(Date.now() - 3600000).toISOString(),
+    request: JSON.stringify({
+      model: 'claude-2',
+      prompt: 'Explain quantum computing in simple terms',
+      max_tokens_to_sample: 200
+    }),
+    response: JSON.stringify({
+      completion: 'Quantum computing is a type of computing that uses quantum mechanical phenomena, such as superposition and entanglement, to perform operations on data. Unlike classical computers that use bits (0s and 1s), quantum computers use quantum bits or qubits. This allows quantum computers to process a vast number of possibilities simultaneously, making them potentially much faster for certain types of problems.',
+      stop_reason: 'stop_sequence',
+      model: 'claude-2',
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: 91,
+        total_tokens: 111
+      }
+    })
+  }
+];
 const dialogVisible = ref(false);
 const currentLog = ref(null);
 const models = ref([]);
@@ -29,12 +89,65 @@ const fetchLogs = async () => {
 
     logs.value = await logsAPI.getLogs(params);
     totalLogs.value = logs.value.length;
+
+    // 如果没有实际数据，使用模拟数据展示效果
+    if (logs.value.length === 0) {
+      logs.value = mockLogs;
+      totalLogs.value = mockLogs.length;
+      // 只在没有实际数据时显示提示信息
+      ElMessage.info('Showing sample logs for demonstration');
+    }
   } catch (error) {
     console.error('Failed to fetch logs:', error);
-    ElMessage.error('Failed to load logs');
+    // API请求失败时使用模拟数据
+    logs.value = mockLogs;
+    totalLogs.value = mockLogs.length;
+    ElMessage.warning('Using sample logs due to API error');
   } finally {
     loading.value = false;
   }
+};
+
+// 格式化JSON字符串，添加错误处理
+const formatJson = (jsonString) => {
+  if (!jsonString) return 'N/A';
+  try {
+    const parsed = JSON.parse(jsonString);
+    return JSON.stringify(parsed, null, 2);
+  } catch (error) {
+    console.error('Failed to parse JSON:', error);
+    return jsonString; // 如果解析失败，返回原始字符串
+  }
+};
+
+// JSON语法高亮处理
+const highlightJson = (jsonString) => {
+  if (!jsonString || jsonString === 'N/A') {
+    return jsonString;
+  }
+  try {
+    // 简单的JSON语法高亮
+    return jsonString
+      .replace(/"([^"]*)":/g, '<span class="json-key">"$1":</span>')
+      .replace(/"([^"]*)"/g, '<span class="json-string">"$1"</span>')
+      .replace(/\b(true|false)\b/g, '<span class="json-boolean">$1</span>')
+      .replace(/\b(null)\b/g, '<span class="json-null">$1</span>')
+      .replace(/\b(\d+(\.\d+)?)\b/g, '<span class="json-number">$1</span>');
+  } catch (error) {
+    console.error('Failed to highlight JSON:', error);
+    return jsonString;
+  }
+};
+
+// 复制内容到剪贴板
+const copyToClipboard = (type) => {
+  const content = type === 'request' ? formatJson(currentLog.value?.request) : formatJson(currentLog.value?.response);
+  navigator.clipboard.writeText(content).then(() => {
+    ElMessage.success('Copied to clipboard');
+  }).catch(err => {
+    console.error('Failed to copy:', err);
+    ElMessage.error('Failed to copy');
+  });
 };
 
 const fetchModels = async () => {
@@ -60,6 +173,39 @@ const formatDateTime = (dateTime) => {
   const seconds = String(date.getSeconds()).padStart(2, '0');
   // 组合成日期时间字符串
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+};
+
+// 从请求中提取最后一条消息内容
+const getLastMessageContent = (requestString) => {
+  if (!requestString) return 'N/A';
+  try {
+    const request = JSON.parse(requestString);
+    
+    // 检查是否有messages数组（OpenAI风格）
+    if (request.messages && Array.isArray(request.messages) && request.messages.length > 0) {
+      // 找到最后一条user或assistant的消息
+      const lastUserMessage = request.messages
+        .filter(msg => msg.role === 'user')
+        .pop();
+      const contents = lastUserMessage.content
+      const content = contents[contents.length - 1]
+      if(content.length > 50) {
+        return content.substring(0, 50) + '...';
+      }
+      return content;
+    }
+    
+    // 检查是否有prompt字段（Claude风格）
+    if (request.prompt) {
+      return request.prompt;
+    }
+    
+    // 默认返回请求的摘要
+    return 'Request content not available';
+  } catch (error) {
+    console.error('Failed to parse request:', error);
+    return 'Invalid request format';
+  }
 };
 
 const viewLogDetails = (log) => {
@@ -128,8 +274,20 @@ onMounted(() => {
           <span>{{ formatDateTime(row.createdAt) }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="Message Content" min-width="200">
+        <template #default="{ row }">
+          <div class="message-content">
+            {{ getLastMessageContent(row.request).length > 15 ? 
+                getLastMessageContent(row.request).substring(0, 15) + '...' : 
+                getLastMessageContent(row.request) }}
+          </div>
+          <!-- <el-tooltip placement="top" :content="getLastMessageContent(row.request)" effect="light">
+       
+          </el-tooltip> -->
+        </template>
+      </el-table-column>
       <el-table-column label="Actions" width="100" fixed="right">
-        <template #default="{ row }">{{ row.id }}
+        <template #default="{ row }">
           <el-button size="small" @click="viewLogDetails(row)">View</el-button>
         </template>
       </el-table-column>
@@ -147,22 +305,38 @@ onMounted(() => {
       ></el-pagination>
     </div>
 
-    <el-dialog title="Log Details" v-model="dialogVisible" width="800px" v-if="currentLog">
+    <el-dialog title="Log Details" v-model="dialogVisible" width="900px" v-if="currentLog">
       <div class="log-details">
         <div class="log-header">
           <div class="log-item"><strong>ID:</strong> {{ currentLog.id }}</div>
           <div class="log-item"><strong>Model:</strong> {{ currentLog.modelName }}</div>
           <div class="log-item"><strong>User Token:</strong> {{ currentLog.userToken }}</div>
-          <div class="log-item"><strong>Created At:</strong> {{ currentLog.createdAt }}</div>
+          <div class="log-item"><strong>Created At:</strong> {{ formatDateTime(currentLog.createdAt) }}</div>
         </div>
         <div class="log-content">
           <div class="log-section">
-            <h4>Request</h4>
-            <pre>{{ currentLog.request ? JSON.stringify(JSON.parse(currentLog.request), null, 2) : 'N/A' }}</pre>
+            <div class="section-header">
+                <h4>Request</h4>
+                <el-button size="small" type="text" @click="copyToClipboard('request')">
+                  Copy
+                </el-button>
+              </div>
+              <div 
+                class="json-content" 
+                v-html="highlightJson(formatJson(currentLog.request))"
+              ></div>
           </div>
           <div class="log-section">
-            <h4>Response</h4>
-            <pre>{{ currentLog.response ? JSON.stringify(JSON.parse(currentLog.response), null, 2) : 'N/A' }}</pre>
+            <div class="section-header">
+                <h4>Response</h4>
+                <el-button size="small" type="text" @click="copyToClipboard('response')">
+                  Copy
+                </el-button>
+              </div>
+              <div 
+                class="json-content" 
+                v-html="highlightJson(formatJson(currentLog.response))"
+              ></div>
           </div>
         </div>
       </div>
@@ -175,7 +349,6 @@ onMounted(() => {
 
 <style scoped>
 .logs {
-  max-width: 1200px;
   margin: 0;
   padding: 20px;
   width: 100%;
@@ -195,7 +368,7 @@ onMounted(() => {
 }
 
 .log-details {
-  max-height: 600px;
+  max-height: 700px;
   overflow-y: auto;
 }
 
@@ -218,18 +391,78 @@ onMounted(() => {
   gap: 20px;
 }
 
-.log-section h4 {
-  margin-top: 0;
-  margin-bottom: 10px;
-  padding-bottom: 5px;
+.log-section {
+  border-radius: 4px;
+  border: 1px solid #eee;
+  overflow: hidden;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #f9f9f9;
+  padding: 10px 15px;
   border-bottom: 1px solid #eee;
 }
 
-pre {
+.section-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.json-content {
   background-color: #f5f5f5;
   padding: 15px;
-  border-radius: 4px;
+  margin: 0;
   overflow-x: auto;
-  max-height: 300px;
+  max-height: 400px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #333;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* JSON语法高亮样式 */
+:deep(.json-key) {
+  color: #a52a2a;
+  font-weight: bold;
+}
+
+:deep(.json-string) {
+  color: #008000;
+}
+
+:deep(.json-number) {
+  color: #0000ff;
+}
+
+:deep(.json-boolean) {
+  color: #b22222;
+  font-weight: bold;
+}
+
+:deep(.json-null) {
+  color: #808080;
+  font-style: italic;
+}
+
+/* 消息内容样式 */
+.message-content {
+  color: #666;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.message-content:hover {
+  color: #409eff;
 }
 </style>

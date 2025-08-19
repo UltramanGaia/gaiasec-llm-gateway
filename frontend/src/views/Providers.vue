@@ -209,7 +209,6 @@ onMounted(() => {
 
 <style scoped>
 .providers {
-  max-width: 1200px;
   margin: 0;
   padding: 20px;
   width: 100%;
