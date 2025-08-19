@@ -2,6 +2,8 @@
 import { ref, onMounted, reactive, computed } from 'vue';
 import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem } from 'element-plus';
 import { logsAPI, modelMappingsAPI } from '../api';
+import VueJsonPretty from 'vue-json-pretty';
+import 'vue-json-pretty/lib/styles.css';
 
 const logs = ref([]);
 const totalLogs = ref(0);
@@ -109,69 +111,21 @@ const fetchLogs = async () => {
 };
 
 // 格式化JSON字符串，添加错误处理
-const formatJson = (jsonString) => {
-  if (!jsonString) return 'N/A';
+const parseJson = (jsonString) => {
+  if (!jsonString) return null;
   try {
-    const parsed = JSON.parse(jsonString);
-    return JSON.stringify(parsed, null, 2);
+    return JSON.parse(jsonString);
   } catch (error) {
     console.error('Failed to parse JSON:', error);
     return jsonString; // 如果解析失败，返回原始字符串
   }
 };
 
-// JSON语法高亮处理
-const highlightJson = (jsonString) => {
-  if (!jsonString || jsonString === 'N/A') {
-    return jsonString;
-  }
-  try {
-    // 改进的JSON语法高亮实现
-    // 首先确保JSON格式正确
-    const formattedJson = formatJson(jsonString);
-    
-    // 更安全的高亮实现，避免标签嵌套问题
-    // 1. 先替换键名 ("key":)
-    let highlighted = formattedJson.replace(
-      /"([^"]*)":/g,
-      '<span class="json-key">"$1":</span>'
-    );
-    
-    // 2. 然后替换字符串值 ("value")
-    highlighted = highlighted.replace(
-      /<\/span>\s*"([^"]*)"/g,
-      '</span> <span class="json-string">"$1"</span>'
-    );
-    
-    // 3. 替换布尔值
-    highlighted = highlighted.replace(
-      /\b(true|false)\b/g,
-      '<span class="json-boolean">$1</span>'
-    );
-    
-    // 4. 替换null值
-    highlighted = highlighted.replace(
-      /\b(null)\b/g,
-      '<span class="json-null">$1</span>'
-    );
-    
-    // 5. 替换数字
-    highlighted = highlighted.replace(
-      /\b(\d+(\.\d+)?)\b/g,
-      '<span class="json-number">$1</span>'
-    );
-    
-    return highlighted;
-  } catch (error) {
-    console.error('Failed to highlight JSON:', error);
-    return jsonString;
-  }
-};
-
 // 复制内容到剪贴板
 const copyToClipboard = (type) => {
-  const content = type === 'request' ? formatJson(currentLog.value?.request) : formatJson(currentLog.value?.response);
-  navigator.clipboard.writeText(content).then(() => {
+  const content = type === 'request' ? currentLog.value?.request : currentLog.value?.response;
+  const formatted = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+  navigator.clipboard.writeText(formatted).then(() => {
     ElMessage.success('Copied to clipboard');
   }).catch(err => {
     console.error('Failed to copy:', err);
@@ -334,7 +288,7 @@ onMounted(() => {
       ></el-pagination>
     </div>
 
-    <el-dialog title="Log Details" v-model="dialogVisible" width="900px" v-if="currentLog">
+    <el-dialog title="Log Details" v-model="dialogVisible" width="95%" v-if="currentLog">
       <div class="log-details">
         <div class="log-header">
           <div class="log-item"><strong>ID:</strong> {{ currentLog.id }}</div>
@@ -350,10 +304,17 @@ onMounted(() => {
                   Copy
                 </el-button>
               </div>
-              <div 
-                class="json-content" 
-                v-html="highlightJson(formatJson(currentLog.request))"
-              ></div>
+              <vue-json-pretty 
+                v-if="parseJson(currentLog.request) !== null" 
+                :data="parseJson(currentLog.request)"
+                :expand-depth="2"
+                :show-length="true"
+                :show-line-number="true"
+                :copyable="false"
+                theme="light"
+                class="json-content"
+              />
+              <div v-else class="json-content">Invalid JSON format</div>
           </div>
           <div class="log-section">
             <div class="section-header">
@@ -362,10 +323,17 @@ onMounted(() => {
                   Copy
                 </el-button>
               </div>
-              <div 
-                class="json-content" 
-                v-html="highlightJson(formatJson(currentLog.response))"
-              ></div>
+              <vue-json-pretty 
+                v-if="parseJson(currentLog.response) !== null" 
+                :data="parseJson(currentLog.response)"
+                :expand-depth="2"
+                :show-length="true"
+                :show-line-number="true"
+                :copyable="false"
+                theme="light"
+                class="json-content"
+              />
+              <div v-else class="json-content">Invalid JSON format</div>
           </div>
         </div>
       </div>
@@ -397,7 +365,7 @@ onMounted(() => {
 }
 
 .log-details {
-  max-height: 700px;
+  max-height: 85vh;
   overflow-y: auto;
 }
 
@@ -455,26 +423,33 @@ onMounted(() => {
   word-wrap: break-word;
 }
 
-/* JSON语法高亮样式 */
-:deep(.json-key) {
+/* 调整vue-json-pretty的样式以适应我们的布局 */
+:deep(.vue-json-pretty) {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #333;
+}
+
+:deep(.vjp-key) {
   color: #a52a2a;
   font-weight: bold;
 }
 
-:deep(.json-string) {
+:deep(.vjp-string) {
   color: #008000;
 }
 
-:deep(.json-number) {
+:deep(.vjp-number) {
   color: #0000ff;
 }
 
-:deep(.json-boolean) {
+:deep(.vjp-boolean) {
   color: #b22222;
   font-weight: bold;
 }
 
-:deep(.json-null) {
+:deep(.vjp-null) {
   color: #808080;
   font-style: italic;
 }
