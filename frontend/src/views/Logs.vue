@@ -1,6 +1,6 @@
 <script setup>
-import { ref, onMounted, reactive, computed } from 'vue';
-import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem } from 'element-plus';
+import { ref, onMounted, reactive, computed, onUnmounted } from 'vue';
+import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem, ElSwitch } from 'element-plus';
 import { logsAPI, modelMappingsAPI } from '../api';
 import VueJsonPretty from 'vue-json-pretty';
 import 'vue-json-pretty/lib/styles.css';
@@ -16,6 +16,11 @@ const filters = reactive({
   page: 1,
   pageSize: 10
 });
+
+// 自动刷新相关变量
+const autoRefresh = ref(true);
+const refreshInterval = ref(5000); // 默认5秒
+let refreshTimer = null;
 
 // 模拟日志数据，用于展示效果
 const mockLogs = [
@@ -89,8 +94,9 @@ const fetchLogs = async () => {
       if (!params[key]) delete params[key];
     });
 
-    logs.value = await logsAPI.getLogs(params);
-    totalLogs.value = logs.value.length;
+    const resp = await logsAPI.getLogs(params);
+    logs.value = resp.logs;
+    totalLogs.value = resp.total;
 
     // 如果没有实际数据，使用模拟数据展示效果
     if (logs.value.length === 0) {
@@ -107,6 +113,36 @@ const fetchLogs = async () => {
     ElMessage.warning('Using sample logs due to API error');
   } finally {
     loading.value = false;
+  }
+};
+
+// 开启/关闭自动刷新
+const toggleAutoRefresh = (value) => {
+  autoRefresh.value = value;
+  if (value) {
+    startAutoRefresh();
+    ElMessage.success(`Auto-refresh enabled (every ${refreshInterval.value / 1000} seconds)`);
+  } else {
+    stopAutoRefresh();
+    ElMessage.info('Auto-refresh disabled');
+  }
+};
+
+// 开始自动刷新
+const startAutoRefresh = () => {
+  // 先清除可能存在的定时器
+  stopAutoRefresh();
+  // 设置新的定时器
+  refreshTimer = setInterval(() => {
+    fetchLogs();
+  }, refreshInterval.value);
+};
+
+// 停止自动刷新
+const stopAutoRefresh = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
   }
 };
 
@@ -171,7 +207,9 @@ const getLastMessageContent = (requestString) => {
         .filter(msg => msg.role === 'user')
         .pop();
       const contents = lastUserMessage.content
-      const content = contents[0]['text']
+      console.log(contents)
+      const content = contents[0]['text'].replace(/\n/g, '')
+      console.log(content)
       if(content.length > 50) {
         return content.substring(0, 50) + '...';
       }
@@ -221,6 +259,11 @@ onMounted(() => {
   fetchLogs();
   fetchModels();
 });
+
+// 组件卸载时清除定时器
+onUnmounted(() => {
+  stopAutoRefresh();
+});
 </script>
 
 <template>
@@ -232,14 +275,14 @@ onMounted(() => {
             <el-option v-for="model in models" :key="model" :label="model" :value="model"></el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="User Token">
-          <el-input v-model="filters.userToken" placeholder="Input user token"></el-input>
-        </el-form-item>
         <el-form-item label="Start Date">
           <el-date-picker v-model="filters.startDate" type="datetime" placeholder="Select start date"></el-date-picker>
         </el-form-item>
         <el-form-item label="End Date">
           <el-date-picker v-model="filters.endDate" type="datetime" placeholder="Select end date"></el-date-picker>
+        </el-form-item>
+        <el-form-item label="Auto Refresh" style="margin-left: auto;">
+          <el-switch v-model="autoRefresh" @change="toggleAutoRefresh"></el-switch>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="fetchLogs">Search</el-button>
@@ -251,7 +294,6 @@ onMounted(() => {
     <el-table :data="logs" style="width: 100%" :loading="loading">
       <el-table-column prop="id" label="ID" width="80"></el-table-column>
       <el-table-column prop="modelName" label="Model" width="150"></el-table-column>
-      <el-table-column prop="userToken" label="User Token" width="200"></el-table-column>
       <el-table-column prop="createdAt" label="Created At" width="180">
         <template #default="{ row }">
           <span>{{ formatDateTime(row.createdAt) }}</span>
@@ -264,9 +306,6 @@ onMounted(() => {
                 getLastMessageContent(row.request).substring(0, 50) + '...' : 
                 getLastMessageContent(row.request) }}
           </div>
-          <!-- <el-tooltip placement="top" :content="getLastMessageContent(row.request)" effect="light">
-       
-          </el-tooltip> -->
         </template>
       </el-table-column>
       <el-table-column label="Actions" width="100" fixed="right">
@@ -288,7 +327,7 @@ onMounted(() => {
       ></el-pagination>
     </div>
 
-    <el-dialog title="Log Details" v-model="dialogVisible" width="95%" v-if="currentLog">
+    <el-dialog title="Log Details" v-model="dialogVisible" width="80%" v-if="currentLog">
       <div class="log-details">
         <div class="log-header">
           <div class="log-item"><strong>ID:</strong> {{ currentLog.id }}</div>
@@ -384,7 +423,7 @@ onMounted(() => {
 
 .log-content {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 20px;
 }
 
