@@ -4,6 +4,7 @@
 
 .idea/
 .vscode/
+.trae/
 
 build/bin
 node_modules

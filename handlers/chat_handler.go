@@ -11,9 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"llm-gateway/models"
+
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
-	"llm-gateway/models"
 )
 
 // ChatHandler 处理聊天完成相关的请求
@@ -52,24 +53,12 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create request log entry
-	reqLog := models.RequestLog{
-		UserToken: r.Header.Get("Authorization"),
-		CreatedAt: time.Now(),
-	}
-	defer func() {
-		if err := h.DB.Create(&reqLog).Error; err != nil {
-			log.Error("Failed to save request log: " + err.Error())
-		}
-	}()
-
 	// Log the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	reqLog.Request = string(body)
 
 	// Parse request to get model name
 	var requestBody map[string]interface{}
@@ -83,7 +72,32 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Model name is required", http.StatusBadRequest)
 		return
 	}
-	reqLog.ModelName = modelName
+
+	userToken := r.Header.Get("Authorization")
+
+	// 检查缓存：根据请求体、模型名称和用户令牌查询是否有相同请求
+	var existingLog models.RequestLog
+	if err := h.DB.Where("request = ? AND model_name = ? AND user_token = ?", string(body), modelName, userToken).First(&existingLog).Error; err == nil {
+		// 找到缓存，直接返回响应
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		log.Info(existingLog.Response)
+		w.Write([]byte(existingLog.Response))
+		return
+	}
+
+	// 创建请求日志条目（仅当缓存未命中时）
+	reqLog := models.RequestLog{
+		UserToken: userToken,
+		CreatedAt: time.Now(),
+		ModelName: modelName,
+		Request:   string(body),
+	}
+	defer func() {
+		if err := h.DB.Create(&reqLog).Error; err != nil {
+			log.Error("Failed to save request log: " + err.Error())
+		}
+	}()
 
 	// Find model mapping
 	var mapping models.ModelMapping
