@@ -166,8 +166,6 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 					if flusher, ok := w.(http.Flusher); ok {
 						flusher.Flush()
 					}
-					// 短暂延迟以模拟流式效果
-					time.Sleep(10 * time.Millisecond)
 
 					// 发送content内容（逐字符或逐词发送）
 					content := choice.Message.Content
@@ -182,8 +180,6 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 						if flusher, ok := w.(http.Flusher); ok {
 							flusher.Flush()
 						}
-						// 短暂延迟以模拟流式效果
-						time.Sleep(10 * time.Millisecond)
 					}
 
 					// 发送finish事件
