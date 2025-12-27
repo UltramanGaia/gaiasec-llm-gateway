@@ -206,9 +206,8 @@ const getLastMessageContent = (requestString) => {
       const lastUserMessage = request.messages
         .filter(msg => msg.role === 'user')
         .pop();
-      const contents = lastUserMessage.content
-      console.log(contents)
-      const content = contents[0]['text'].replace(/\n/g, '')
+      const contentRaw = lastUserMessage.content
+      const content = contentRaw.replace(/\n/g, '')
       console.log(content)
       if(content.length > 50) {
         return content.substring(0, 50) + '...';
