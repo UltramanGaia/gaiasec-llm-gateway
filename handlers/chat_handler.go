@@ -75,14 +75,144 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	userToken := r.Header.Get("Authorization")
 
+	// 检查是否需要流式响应
+	isStream := false
+	if streamValue, ok := requestBody["stream"].(bool); ok && streamValue {
+		isStream = true
+	}
+
 	// 检查缓存：根据请求体、模型名称和用户令牌查询是否有相同请求
 	var existingLog models.RequestLog
 	if err := h.DB.Where("request = ? AND model_name = ? AND user_token = ?", string(body), modelName, userToken).First(&existingLog).Error; err == nil {
-		// 找到缓存，直接返回响应
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		log.Info(existingLog.Response)
-		w.Write([]byte(existingLog.Response))
+		// 找到缓存，根据请求类型返回响应
+		if isStream {
+			// 流式请求：将JSON响应转换为SSE格式
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.WriteHeader(http.StatusOK)
+
+			// 解析存储的JSON响应
+			var cachedResponse struct {
+				ID      string `json:"id"`
+				Object  string `json:"object"`
+				Created int64  `json:"created"`
+				Model   string `json:"model"`
+				Choices []struct {
+					Index   int `json:"index"`
+					Message struct {
+						Content string `json:"content"`
+						Role    string `json:"role"`
+					} `json:"message"`
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+					Logprobs     interface{} `json:"logprobs"`
+					FinishReason string      `json:"finish_reason"`
+				} `json:"choices"`
+				Usage struct {
+					PromptTokens       int `json:"prompt_tokens"`
+					CompletionTokens   int `json:"completion_tokens"`
+					TotalTokens        int `json:"total_tokens"`
+					PromptTokensDetail struct {
+						CachedTokens int `json:"cached_tokens"`
+					}
+					PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+					PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+				} `json:"usage"`
+			}
+
+			if err := json.Unmarshal([]byte(existingLog.Response), &cachedResponse); err == nil {
+				// 构建SSE响应
+				var deltaResponse struct {
+					ID      string `json:"id"`
+					Object  string `json:"object"`
+					Created int64  `json:"created"`
+					Model   string `json:"model"`
+					Choices []struct {
+						Index int `json:"index"`
+						Delta struct {
+							Role    string `json:"role"`
+							Content string `json:"content"`
+						} `json:"delta"`
+						Logprobs     interface{} `json:"logprobs"`
+						FinishReason string      `json:"finish_reason"`
+					} `json:"choices"`
+				}
+
+				// 设置基础字段
+				deltaResponse.ID = cachedResponse.ID
+				deltaResponse.Object = cachedResponse.Object
+				deltaResponse.Created = cachedResponse.Created
+				deltaResponse.Model = cachedResponse.Model
+				deltaResponse.Choices = make([]struct {
+					Index int `json:"index"`
+					Delta struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					} `json:"delta"`
+					Logprobs     interface{} `json:"logprobs"`
+					FinishReason string      `json:"finish_reason"`
+				}, len(cachedResponse.Choices))
+
+				// 发送初始消息（role）
+				for i, choice := range cachedResponse.Choices {
+					deltaResponse.Choices[i].Index = choice.Index
+					deltaResponse.Choices[i].Delta.Role = "assistant"
+					deltaResponse.Choices[i].Delta.Content = ""
+
+					jsonData, _ := json.Marshal(deltaResponse)
+					w.Write([]byte("data: " + string(jsonData) + "\n\n"))
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					// 短暂延迟以模拟流式效果
+					time.Sleep(10 * time.Millisecond)
+
+					// 发送content内容（逐字符或逐词发送）
+					content := choice.Message.Content
+					if content == "" {
+						content = choice.Delta.Content
+					}
+
+					for _, char := range content {
+						deltaResponse.Choices[i].Delta.Content = string(char)
+						jsonData, _ := json.Marshal(deltaResponse)
+						w.Write([]byte("data: " + string(jsonData) + "\n\n"))
+						if flusher, ok := w.(http.Flusher); ok {
+							flusher.Flush()
+						}
+						// 短暂延迟以模拟流式效果
+						time.Sleep(10 * time.Millisecond)
+					}
+
+					// 发送finish事件
+					deltaResponse.Choices[i].Delta.Content = ""
+					deltaResponse.Choices[i].FinishReason = "stop"
+					jsonData, _ = json.Marshal(deltaResponse)
+					w.Write([]byte("data: " + string(jsonData) + "\n\n"))
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+
+				// 发送结束标记
+				w.Write([]byte("data: [DONE]\n\n"))
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			} else {
+				// 解析失败，返回JSON响应
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(existingLog.Response))
+			}
+		} else {
+			// 非流式请求：直接返回JSON响应
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(existingLog.Response))
+		}
 		return
 	}
 
@@ -142,8 +272,8 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 
-	// 检查是否需要流式响应
-	isStream := false
+	// 检查是否需要流式响应（已在前面声明，这里直接赋值）
+	isStream = false
 	if streamValue, ok := requestBody["stream"].(bool); ok && streamValue {
 		isStream = true
 		req.Header.Set("Accept", "text/event-stream")
