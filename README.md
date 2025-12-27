@@ -81,6 +81,7 @@ Open your browser and navigate to `http://localhost:8000`
 ## API Documentation
 ### OpenAI Compatible Endpoints
 - `POST /chat/completions`: Chat completion API compatible with OpenAI
+- `POST /v1/chat/completions`: Chat completion API compatible with OpenAI
 
 ### Management Endpoints
 - `GET /api/providers`: List all providers

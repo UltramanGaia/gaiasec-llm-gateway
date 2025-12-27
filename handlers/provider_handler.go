@@ -3,9 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
-	"github.com/UltramanGaia/llm-gateway/models"
 	"gorm.io/gorm"
+	"llm-gateway/models"
 )
 
 // ProviderHandler 处理Provider相关的API请求
@@ -61,4 +62,51 @@ func (h *ProviderHandler) GetProviders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	json.NewEncoder(w).Encode(providers)
+}
+
+func (h *ProviderHandler) GetProvider(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Path[len("/api/providers/"):]
+	var provider models.Provider
+	if err := h.DB.First(&provider, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	json.NewEncoder(w).Encode(provider)
+}
+
+func (h *ProviderHandler) ModifyProvider(w http.ResponseWriter, r *http.Request) {
+
+	id := r.URL.Path[len("/api/providers/"):]
+	var provider models.Provider
+	if err := h.DB.First(&provider, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 使用临时结构体来避免ID类型不匹配问题
+	type providerInput struct {
+		Name    string `json:"name"`
+		APIKey  string `json:"apiKey"`
+		BaseURL string `json:"baseURL"`
+	}
+
+	var input providerInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	provider.Name = input.Name
+	provider.APIKey = input.APIKey
+	provider.BaseURL = input.BaseURL
+	provider.UpdatedAt = time.Now()
+
+	if err := h.DB.Save(&provider).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(provider)
 }

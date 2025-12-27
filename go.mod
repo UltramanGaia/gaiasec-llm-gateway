@@ -1,4 +1,4 @@
-module github.com/UltramanGaia/llm-gateway
+module llm-gateway
 
 go 1.23.0
 

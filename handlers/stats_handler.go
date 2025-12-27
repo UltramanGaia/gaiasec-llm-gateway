@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/UltramanGaia/llm-gateway/models"
 	"gorm.io/gorm"
+	"llm-gateway/models"
 )
 
 // StatsHandler 处理统计相关的API请求
@@ -22,23 +22,23 @@ func NewStatsHandler(db *gorm.DB) *StatsHandler {
 
 // StatsResponse 定义统计信息响应结构
 type StatsResponse struct {
-	TotalRequests  int64  `json:"totalRequests"`
-	ActiveProviders int64  `json:"activeProviders"`
-	ModelMappings  int64  `json:"modelMappings"`
-	AvgResponseTime int64  `json:"avgResponseTime"`
+	TotalRequests   int64 `json:"totalRequests"`
+	ActiveProviders int64 `json:"activeProviders"`
+	ModelMappings   int64 `json:"modelMappings"`
+	AvgResponseTime int64 `json:"avgResponseTime"`
 }
 
 // ProviderStatsResponse 定义提供者统计响应结构
 type ProviderStatsResponse struct {
-	ProviderName string `json:"providerName"`
-	RequestCount int64  `json:"requestCount"`
+	ProviderName    string `json:"providerName"`
+	RequestCount    int64  `json:"requestCount"`
 	AvgResponseTime int64  `json:"avgResponseTime"`
 }
 
 // ModelStatsResponse 定义模型统计响应结构
 type ModelStatsResponse struct {
-	ModelName    string `json:"modelName"`
-	RequestCount int64  `json:"requestCount"`
+	ModelName       string `json:"modelName"`
+	RequestCount    int64  `json:"requestCount"`
 	AvgResponseTime int64  `json:"avgResponseTime"`
 }
 

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/UltramanGaia/llm-gateway/models"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"llm-gateway/models"
 )
 
 // AuthHandler 处理认证相关的API请求

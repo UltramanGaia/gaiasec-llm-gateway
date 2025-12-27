@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	log "github.com/sirupsen/logrus"
 	"net/http"
+	"time"
 
-	"github.com/UltramanGaia/llm-gateway/models"
 	"gorm.io/gorm"
+	"llm-gateway/models"
 )
 
 // ModelMappingHandler 处理ModelMapping相关的API请求
@@ -48,4 +49,42 @@ func (h *ModelMappingHandler) GetModelMappings(w http.ResponseWriter, r *http.Re
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(mappings)
+}
+
+func (h *ModelMappingHandler) GetModelMapping(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Path[len("/api/model-mappings/"):]
+	var mappings []models.ModelMapping
+	if err := h.DB.First(&mappings, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(mappings)
+}
+
+func (h *ModelMappingHandler) ModifyModelMapping(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Path[len("/api/model-mappings/"):]
+	var mapping models.ModelMapping
+	if err := h.DB.First(&mapping, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var mappingInput models.ModelMapping
+	if err := json.NewDecoder(r.Body).Decode(&mappingInput); err != nil {
+		log.Errorf("Error decoding request body: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	mapping.Alias = mappingInput.Alias
+	mapping.ModelName = mappingInput.ModelName
+	mapping.UpdatedAt = time.Now()
+	if err := h.DB.Save(&mapping).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(mapping)
 }

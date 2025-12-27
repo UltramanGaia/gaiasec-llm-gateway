@@ -19,30 +19,31 @@ import {CopyDocument} from '@element-plus/icons-vue';
 const providers = ref([]);
 const dialogVisible = ref(false);
 const isEditing = ref(false);
-const currentProvider = ref({ id: '', name: '', apiKey: '', baseURL: '' });
+const currentProvider = ref({ id: '', name: '', apiKey: '', baseUrl: '' });
 const formRef = ref(null);
 
 // 常见提供商预设
 const defaultProviders = ref([
-  { name: 'DeepSeek', baseURL: 'https://api.deepseek.com/' },
-  { name: '阿里云', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
-  { name: 'OpenAI', baseURL: 'https://api.openai.com/v1' },
-  { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1' },
-  { name: 'Google Gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta' }
+  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/' },
+  { name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1' },
+  { name: '阿里云', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1' },
+  { name: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1' },
+  { name: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' }
 ]);
 
 // 选择预设提供商时自动填充信息
 const selectDefaultProvider = (providerName) => {
   if (!providerName) {
     currentProvider.value.name = '';
-    currentProvider.value.baseURL = '';
+    currentProvider.value.baseUrl = '';
     return;
   }
   
   const provider = defaultProviders.value.find(p => p.name === providerName);
   if (provider) {
     currentProvider.value.name = provider.name;
-    currentProvider.value.baseURL = provider.baseURL;
+    currentProvider.value.baseUrl = provider.baseUrl;
   }
 };
 
@@ -58,7 +59,7 @@ const fetchProviders = async () => {
 
 const openAddDialog = () => {
   isEditing.value = false;
-  currentProvider.value = { id: '', name: '', apiKey: '', baseURL: '' };
+  currentProvider.value = { id: '', name: '', apiKey: '', baseUrl: '' };
   dialogVisible.value = true;
 };
 
@@ -195,8 +196,8 @@ onMounted(() => {
         <el-form-item label="API Key" prop="apiKey" :rules="[{ required: true, message: '请输入API密钥', trigger: 'blur' }]">
           <el-input v-model="currentProvider.apiKey" type="password"></el-input>
         </el-form-item>
-        <el-form-item label="Base URL" prop="baseURL" :rules="[{ required: true, message: '请输入基础URL', trigger: 'blur' }, { type: 'url', message: '请输入有效的URL', trigger: 'blur' }]">
-          <el-input v-model="currentProvider.baseURL"></el-input>
+        <el-form-item label="Base URL" prop="baseUrl" :rules="[{ required: true, message: '请输入基础URL', trigger: 'blur' }, { type: 'url', message: '请输入有效的URL', trigger: 'blur' }]">
+          <el-input v-model="currentProvider.baseUrl"></el-input>
         </el-form-item>
       </el-form>
       <template #footer>

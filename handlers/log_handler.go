@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/UltramanGaia/llm-gateway/models"
 	"gorm.io/gorm"
+	"llm-gateway/models"
 )
 
 // LogHandler 处理RequestLog相关的API请求
@@ -24,7 +24,7 @@ func NewLogHandler(db *gorm.DB) *LogHandler {
 
 // LogResponse 定义日志响应结构，包含分页信息
 type LogResponse struct {
-	Total int64              `json:"total"`
+	Total int64               `json:"total"`
 	Logs  []models.RequestLog `json:"logs"`
 }
 

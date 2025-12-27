@@ -8,12 +8,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/UltramanGaia/llm-gateway/handlers"
-	"github.com/UltramanGaia/llm-gateway/models"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"llm-gateway/handlers"
+	"llm-gateway/models"
 )
 
 func initDB() (*gorm.DB, error) {
@@ -77,6 +77,7 @@ func main() {
 
 	// API routes with authentication
 	http.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
+	http.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
 	//http.HandleFunc("/chat/completions", handlers.JWTAuthMiddleware(chatHandler.ChatCompletion))
 
 	// Provider API routes with authentication
@@ -90,7 +91,27 @@ func main() {
 		}
 	}))
 
+	http.HandleFunc("/api/providers/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			providerHandler.GetProvider(w, r)
+		} else if r.Method == "POST" {
+			providerHandler.ModifyProvider(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
 	// Model Mapping API routes with authentication
+	http.HandleFunc("/api/model-mappings/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			modelMappingHandler.GetModelMapping(w, r)
+		} else if r.Method == "POST" {
+			modelMappingHandler.ModifyModelMapping(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
 	http.HandleFunc("/api/model-mappings", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelMappingHandler.GetModelMappings(w, r)

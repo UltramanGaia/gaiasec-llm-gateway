@@ -30,7 +30,7 @@ export const addModelMapping = (data) => {
  * @returns {Promise}
  */
 export const updateModelMapping = (id, data) => {
-  return axios.put(`/model-mappings/${id}`, data);
+  return axios.post(`/model-mappings/${id}`, data);
 };
 
 /**

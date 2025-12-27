@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/UltramanGaia/llm-gateway/models"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"llm-gateway/models"
 )
 
 // ChatHandler 处理聊天完成相关的请求
@@ -29,6 +30,28 @@ func NewChatHandler(db *gorm.DB) *ChatHandler {
 
 // ChatCompletion 处理聊天完成请求，根据模型名称路由到对应的LLM提供商
 func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
+	// 1. 允许的跨域源（根据实际需求调整，* 表示允许所有源）
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		// 生产环境建议指定具体域名，如：w.Header().Set("Access-Control-Allow-Origin", "https://example.com")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
+
+	// 2. 允许的 HTTP 方法
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+
+	// 3. 允许的自定义请求头（包含前端可能发送的头，如 Authorization、Content-Type）
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+
+	// 4. 允许前端读取的自定义响应头（如需前端获取自定义头，需在此声明）
+	w.Header().Set("Access-Control-Expose-Headers", "X-Custom-Header")
+
+	// 5. 预检请求（OPTIONS）直接返回 204 No Content
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	// Create request log entry
 	reqLog := models.RequestLog{
 		UserToken: r.Header.Get("Authorization"),
@@ -205,8 +228,9 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 记录完整的响应和仅content的响应
-
-		streamResponse.Choices[0].Delta.Content = contentOnly.String()
+		if len(streamResponse.Choices) > 0 {
+			streamResponse.Choices[0].Delta.Content = contentOnly.String()
+		}
 		respData, _ := json.Marshal(streamResponse)
 
 		reqLog.Response = string(respData)
@@ -218,10 +242,33 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Log the response
-		reqLog.Response = string(respBody)
+		respBodyDecode, err := gzipDecode(respBody)
+		if err != nil {
+			// Log the response
+			reqLog.Response = string(respBody)
+		} else {
+			reqLog.Response = string(respBodyDecode)
+		}
 
 		// Write response body
 		w.Write(respBody)
 	}
+}
+
+func gzipDecode(input []byte) ([]byte, error) {
+	// 创建gzip.Reader
+	reader, err := gzip.NewReader(bytes.NewReader(input))
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	// 读取解码后的数据
+	var buffer bytes.Buffer
+	_, err = io.Copy(&buffer, reader)
+	if err != nil {
+		return nil, err
+	}
+
+	return buffer.Bytes(), nil
 }

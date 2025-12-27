@@ -30,7 +30,7 @@ export const addProvider = (data) => {
  * @returns {Promise}
  */
 export const updateProvider = (id, data) => {
-  return axios.put(`/providers/${id}`, data);
+  return axios.post(`/providers/${id}`, data);
 };
 
 /**
