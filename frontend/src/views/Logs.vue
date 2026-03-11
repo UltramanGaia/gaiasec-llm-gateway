@@ -207,7 +207,20 @@ const getLastMessageContent = (requestString) => {
         .filter(msg => msg.role === 'user')
         .pop();
       const contentRaw = lastUserMessage.content
-      const content = contentRaw.replace(/\n/g, '')
+      let result = '';
+    if (Array.isArray(contentRaw)) {
+        // 情况1：content是数组 → 过滤出text类型的元素，取最后一个的text值
+        const validTextItems = contentRaw.filter(item =>
+          item?.type === 'text' && typeof item.text === 'string'
+        );
+        if (validTextItems.length > 0) {
+          result = validTextItems[validTextItems.length - 1].text;
+        }
+      } else if (typeof contentRaw === 'string') {
+        // 情况2：content是字符串 → 直接赋值
+        result = contentRaw;
+      }
+      const content = result.replace(/\n/g, '')
       console.log(content)
       if(content.length > 50) {
         return content.substring(0, 50) + '...';

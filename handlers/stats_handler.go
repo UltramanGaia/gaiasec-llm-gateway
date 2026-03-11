@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"gorm.io/gorm"
 	"llm-gateway/models"
+
+	"gorm.io/gorm"
 )
 
 // StatsHandler 处理统计相关的API请求
@@ -59,7 +60,7 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	// 计算平均响应时间（毫秒）
 	var avgResponseTime int64
 	h.DB.Model(&models.RequestLog{}).
-		Select("avg(response_time)").
+		Select("COALESCE(avg(response_time), 0)").
 		Scan(&avgResponseTime)
 
 	// 如果没有请求，设置默认值

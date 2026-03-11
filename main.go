@@ -3,18 +3,67 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"strings"
+	"time"
+
+	"llm-gateway/handlers"
+	"llm-gateway/models"
 
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"llm-gateway/handlers"
-	"llm-gateway/models"
 )
+
+// responseWriterWrapper 用于包装 http.ResponseWriter 以捕获响应状态码
+// 用于实现 access log 记录
+
+type responseWriterWrapper struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+// WriteHeader 重写 WriteHeader 方法以捕获状态码
+
+func (rw *responseWriterWrapper) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Write 重写 Write 方法以确保默认状态码为 200
+
+func (rw *responseWriterWrapper) Write(b []byte) (int, error) {
+	if rw.statusCode == 0 {
+		rw.statusCode = http.StatusOK
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+// accessLogMiddleware 实现 access log 中间件
+// 记录所有 HTTP 请求的访问日志，包括请求方法、URL、状态码、响应时间等
+
+func accessLogMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 记录请求开始时间
+		startTime := time.Now()
+
+		// 创建响应包装器以捕获状态码
+		rw := &responseWriterWrapper{
+			ResponseWriter: w,
+			statusCode:     0,
+		}
+
+		// 处理请求
+		next.ServeHTTP(rw, r)
+
+		// 计算响应时间
+		duration := time.Since(startTime)
+
+		// 记录 access log
+		log.Infof("Access: %s %s %d %d %s", r.Method, r.URL.Path, rw.statusCode, duration.Milliseconds(), r.UserAgent())
+	})
+}
 
 func initDB() (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Open("llm.db"), &gorm.Config{})
@@ -54,10 +103,11 @@ var port int64
 
 func init() {
 	flag.StringVar(&host, "host", "0.0.0.0", "Host to listen on")
-	flag.Int64Var(&port, "port", 8000, "Port to listen on")
+	flag.Int64Var(&port, "port", 8090, "Port to listen on")
 	flag.Parse()
 }
 
+// main函数入口
 func main() {
 	db, err := initDB()
 	if err != nil {
@@ -72,16 +122,18 @@ func main() {
 	logHandler := handlers.NewLogHandler(db)
 	statsHandler := handlers.NewStatsHandler(db)
 
+	// 创建一个新的ServeMux
+	mux := http.NewServeMux()
+
 	// 登录路由不需要认证
-	http.HandleFunc("/api/login", authHandler.Login)
+	mux.HandleFunc("/api/login", authHandler.Login)
 
 	// API routes with authentication
-	http.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
-	http.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
-	//http.HandleFunc("/chat/completions", handlers.JWTAuthMiddleware(chatHandler.ChatCompletion))
+	mux.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
+	mux.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
 
 	// Provider API routes with authentication
-	http.HandleFunc("/api/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			providerHandler.GetProviders(w, r)
 		} else if r.Method == "POST" {
@@ -91,7 +143,7 @@ func main() {
 		}
 	}))
 
-	http.HandleFunc("/api/providers/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/providers/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			providerHandler.GetProvider(w, r)
 		} else if r.Method == "POST" {
@@ -102,7 +154,7 @@ func main() {
 	}))
 
 	// Model Mapping API routes with authentication
-	http.HandleFunc("/api/model-mappings/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/model-mappings/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelMappingHandler.GetModelMapping(w, r)
 		} else if r.Method == "POST" {
@@ -112,7 +164,7 @@ func main() {
 		}
 	}))
 
-	http.HandleFunc("/api/model-mappings", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/model-mappings", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelMappingHandler.GetModelMappings(w, r)
 		} else if r.Method == "POST" {
@@ -123,7 +175,7 @@ func main() {
 	}))
 
 	// Stats API routes with authentication
-	http.HandleFunc("/api/stats", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetStats(w, r)
 		} else {
@@ -132,7 +184,7 @@ func main() {
 	}))
 
 	// Provider stats API route with authentication
-	http.HandleFunc("/api/stats/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetProviderStats(w, r)
 		} else {
@@ -141,7 +193,7 @@ func main() {
 	}))
 
 	// Model stats API route with authentication
-	http.HandleFunc("/api/stats/models", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats/models", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetModelStats(w, r)
 		} else {
@@ -150,7 +202,7 @@ func main() {
 	}))
 
 	// Log API routes with authentication
-	http.HandleFunc("/api/logs", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/logs", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			logHandler.GetLogs(w, r)
 		} else if r.Method == "DELETE" {
@@ -161,7 +213,7 @@ func main() {
 	}))
 
 	// Log detail API route with authentication
-	http.HandleFunc("/api/logs/", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/logs/", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			pathParts := strings.Split(r.URL.Path, "/")
 			if len(pathParts) >= 4 {
@@ -180,33 +232,22 @@ func main() {
 
 	// Frontend static files
 	// 使用文件服务器提供静态文件
-	http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("./frontend/dist/assets"))))
-	http.Handle("/favicon.ico", http.FileServer(http.Dir("./frontend/dist")))
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("./frontend/dist/assets"))))
+	mux.Handle("/favicon.ico", http.FileServer(http.Dir("./frontend/dist")))
 
-	// 为SPA应用设置路由fallback
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// 如果请求的不是API路由，返回index.html以支持前端路由
-		if !strings.HasPrefix(r.URL.Path, "/chat/") && !strings.HasPrefix(r.URL.Path, "/api/") {
-			// 读取并提供index.html
-			indexPath := "./frontend/dist/index.html"
-			file, err := os.Open(indexPath)
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				return
-			}
-			defer file.Close()
-
-			// 设置内容类型
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// 复制文件内容到响应
-			io.Copy(w, file)
+	// Catch-all handler for non-API routes - serve frontend index.html
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api") {
+			http.Error(w, "API endpoint not found", http.StatusNotFound)
+			return
 		}
+		http.ServeFile(w, r, "./frontend/dist/index.html")
 	})
 
-	// 启动服务器
+	// 启动服务器，使用 accessLogMiddleware 包装 mux
 	address := fmt.Sprintf("%s:%d", host, port)
 	log.Printf("Server starting on %s\n", address)
-	if err := http.ListenAndServe(address, nil); err != nil {
+	if err := http.ListenAndServe(address, accessLogMiddleware(mux)); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}
 }

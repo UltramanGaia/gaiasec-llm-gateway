@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -98,13 +99,19 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 
 	// 找到缓存，根据请求类型返回响应
 	if isStream {
-		// 流式请求：将JSON响应转换为SSE格式
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
 
-		// 解析存储的JSON响应
+		if existingLog.StreamResponse != "" {
+			w.Write([]byte(existingLog.StreamResponse))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return true
+		}
+
 		var cachedResponse struct {
 			ID      string `json:"id"`
 			Object  string `json:"object"`
@@ -113,11 +120,13 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 			Choices []struct {
 				Index   int `json:"index"`
 				Message struct {
-					Content string `json:"content"`
-					Role    string `json:"role"`
+					Content          string `json:"content"`
+					Role             string `json:"role"`
+					ReasoningContent string `json:"reasoning_content"`
 				} `json:"message"`
 				Delta struct {
-					Content string `json:"content"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
 				} `json:"delta"`
 				Logprobs     interface{} `json:"logprobs"`
 				FinishReason string      `json:"finish_reason"`
@@ -144,8 +153,9 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 				Choices []struct {
 					Index int `json:"index"`
 					Delta struct {
-						Role    string `json:"role"`
-						Content string `json:"content"`
+						Role             string `json:"role"`
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
 					} `json:"delta"`
 					Logprobs     interface{} `json:"logprobs"`
 					FinishReason string      `json:"finish_reason"`
@@ -160,8 +170,9 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 			deltaResponse.Choices = make([]struct {
 				Index int `json:"index"`
 				Delta struct {
-					Role    string `json:"role"`
-					Content string `json:"content"`
+					Role             string `json:"role"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
 				} `json:"delta"`
 				Logprobs     interface{} `json:"logprobs"`
 				FinishReason string      `json:"finish_reason"`
@@ -179,14 +190,31 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 					flusher.Flush()
 				}
 
-				// 发送content内容（逐字符或逐词发送）
+				// 获取content和reasoning_content
 				content := choice.Message.Content
 				if content == "" {
 					content = choice.Delta.Content
 				}
+				reasoningContent := choice.Message.ReasoningContent
+				if reasoningContent == "" {
+					reasoningContent = choice.Delta.ReasoningContent
+				}
 
+				// 先发送reasoning_content内容（逐字符发送）
+				for _, char := range reasoningContent {
+					deltaResponse.Choices[i].Delta.Content = ""
+					deltaResponse.Choices[i].Delta.ReasoningContent = string(char)
+					jsonData, _ := json.Marshal(deltaResponse)
+					w.Write([]byte("data: " + string(jsonData) + "\n\n"))
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+
+				// 发送content内容（逐字符或逐词发送）
 				for _, char := range content {
 					deltaResponse.Choices[i].Delta.Content = string(char)
+					deltaResponse.Choices[i].Delta.ReasoningContent = ""
 					jsonData, _ := json.Marshal(deltaResponse)
 					w.Write([]byte("data: " + string(jsonData) + "\n\n"))
 					if flusher, ok := w.(http.Flusher); ok {
@@ -196,6 +224,7 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 
 				// 发送finish事件
 				deltaResponse.Choices[i].Delta.Content = ""
+				deltaResponse.Choices[i].Delta.ReasoningContent = ""
 				deltaResponse.Choices[i].FinishReason = "stop"
 				jsonData, _ = json.Marshal(deltaResponse)
 				w.Write([]byte("data: " + string(jsonData) + "\n\n"))
@@ -251,6 +280,14 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 		return nil, err
 	}
 
+	// 安全处理嵌套map的判断和赋值
+	// 第一步：获取"reasoning"的值，并断言为map[string]interface{}
+	reasoningVal, reasoningOk := requestBody["reasoning"].(map[string]interface{})
+	// 第二步：判断reasoning存在且是map类型，同时其下的"effort"非nil
+	if reasoningOk && reasoningVal["effort"] != nil {
+		reasoningVal["effort"] = "none"
+	}
+
 	// Create new request to provider
 	providerURL := provider.BaseURL
 	if !strings.HasSuffix(providerURL, "/") {
@@ -287,8 +324,9 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
 	// 用于组合流式响应内容
 	var fullResponse strings.Builder
-	var mu sync.Mutex               // 保护并发访问
-	var contentOnly strings.Builder // 仅用于拼接content内容
+	var mu sync.Mutex                        // 保护并发访问
+	var contentOnly strings.Builder          // 仅用于拼接content内容
+	var reasoningContentOnly strings.Builder // 仅用于拼接reasoning_content内容
 
 	// 定义响应结构体
 	var streamResponse struct {
@@ -299,7 +337,8 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 		Choices []struct {
 			Index int `json:"index"`
 			Delta struct {
-				Content string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
 			}
 			Logprobs     interface{} `json:"logprobs"`
 			FinishReason string      `json:"finish_reason"`
@@ -315,6 +354,11 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 		}
 	}
+
+	// 用于保存第一个事件的元数据
+	var firstID, firstObject, firstModel string
+	var firstCreated int64
+	var hasMetadata bool
 
 	// 流式处理响应
 	reader := bufio.NewReader(resp.Body)
@@ -345,24 +389,101 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 			if jsonStr != "" && jsonStr != "[DONE]" {
 				// 解析JSON
 				if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err == nil {
+					// 保存第一个事件的元数据
+					if !hasMetadata && streamResponse.ID != "" {
+						firstID = streamResponse.ID
+						firstObject = streamResponse.Object
+						firstCreated = streamResponse.Created
+						firstModel = streamResponse.Model
+						hasMetadata = true
+					}
 					// 提取content内容
-					if len(streamResponse.Choices) > 0 && streamResponse.Choices[0].Delta.Content != "" {
-						mu.Lock()
-						contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
-						mu.Unlock()
+					if len(streamResponse.Choices) > 0 {
+						if streamResponse.Choices[0].Delta.Content != "" {
+							mu.Lock()
+							contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
+							mu.Unlock()
+						}
+						// 提取reasoning_content内容
+						if streamResponse.Choices[0].Delta.ReasoningContent != "" {
+							mu.Lock()
+							reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
+							mu.Unlock()
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// 记录完整的响应和仅content的响应
-	if len(streamResponse.Choices) > 0 {
-		streamResponse.Choices[0].Delta.Content = contentOnly.String()
+	// 构建缓存响应（使用非流式格式，包含Message字段）
+	cachedResp := struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index   int `json:"index"`
+			Message struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content,omitempty"`
+			} `json:"message"`
+			FinishReason string      `json:"finish_reason"`
+			Logprobs     interface{} `json:"logprobs"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens       int `json:"prompt_tokens"`
+			CompletionTokens   int `json:"completion_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			PromptTokensDetail struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_detail"`
+			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+		} `json:"usage"`
+	}{
+		ID:      firstID,
+		Object:  firstObject,
+		Created: firstCreated,
+		Model:   firstModel,
+		Choices: []struct {
+			Index   int `json:"index"`
+			Message struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content,omitempty"`
+			} `json:"message"`
+			FinishReason string      `json:"finish_reason"`
+			Logprobs     interface{} `json:"logprobs"`
+		}{
+			{
+				Index: 0,
+				Message: struct {
+					Role             string `json:"role"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content,omitempty"`
+				}{
+					Role:             "assistant",
+					Content:          contentOnly.String(),
+					ReasoningContent: reasoningContentOnly.String(),
+				},
+				FinishReason: "stop",
+				Logprobs:     nil,
+			},
+		},
 	}
-	respData, _ := json.Marshal(streamResponse)
 
+	cachedResp.Usage.PromptTokens = streamResponse.Usage.PromptTokens
+	cachedResp.Usage.CompletionTokens = streamResponse.Usage.CompletionTokens
+	cachedResp.Usage.TotalTokens = streamResponse.Usage.TotalTokens
+	cachedResp.Usage.PromptTokensDetail.CachedTokens = streamResponse.Usage.PromptTokensDetail.CachedTokens
+	cachedResp.Usage.PromptCacheHitTokens = streamResponse.Usage.PromptCacheHitTokens
+	cachedResp.Usage.PromptCacheMissTokens = streamResponse.Usage.PromptCacheMissTokens
+
+	respData, _ := json.Marshal(cachedResp)
 	reqLog.Response = string(respData)
+	reqLog.StreamResponse = fullResponse.String()
 }
 
 // handleNonStreamResponse 处理非流式响应
@@ -398,6 +519,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	fmt.Println(string(body))
 
 	// 检查缓存
 	if h.handleCache(w, body, modelName, userToken, isStream) {
