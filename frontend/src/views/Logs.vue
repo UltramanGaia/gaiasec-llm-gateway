@@ -1,9 +1,12 @@
 <script setup>
 import { ref, onMounted, reactive, computed, onUnmounted } from 'vue';
-import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem, ElSwitch } from 'element-plus';
+import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem, ElSwitch, ElRadioGroup, ElRadioButton, ElTabs, ElTabPane } from 'element-plus';
+import { View, Document, ChatDotRound, Cpu } from '@element-plus/icons-vue';
 import { logsAPI, modelMappingsAPI } from '../api';
 import VueJsonPretty from 'vue-json-pretty';
 import 'vue-json-pretty/lib/styles.css';
+import MessageViewer from '../components/MessageViewer.vue';
+import ResponseViewer from '../components/ResponseViewer.vue';
 
 const logs = ref([]);
 const totalLogs = ref(0);
@@ -17,18 +20,17 @@ const filters = reactive({
   pageSize: 10
 });
 
-// 自动刷新相关变量
 const autoRefresh = ref(true);
-const refreshInterval = ref(5000); // 默认5秒
+const refreshInterval = ref(5000);
 let refreshTimer = null;
 
-// 模拟日志数据，用于展示效果
 const mockLogs = [
   {
     id: 1,
     modelName: 'gpt-3.5-turbo',
     userToken: 'user_123456',
     createdAt: new Date().toISOString(),
+    responseTime: 1250,
     request: JSON.stringify({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -64,6 +66,7 @@ const mockLogs = [
     modelName: 'claude-2',
     userToken: 'user_654321',
     createdAt: new Date(Date.now() - 3600000).toISOString(),
+    responseTime: 2100,
     request: JSON.stringify({
       model: 'claude-2',
       prompt: 'Explain quantum computing in simple terms',
@@ -84,11 +87,12 @@ const mockLogs = [
 const dialogVisible = ref(false);
 const currentLog = ref(null);
 const models = ref([]);
+const viewMode = ref('visual');
+const activeTab = ref('request');
 
 const fetchLogs = async () => {
   try {
     loading.value = true;
-    // 过滤掉空值参数
     const params = { ...filters };
     Object.keys(params).forEach(key => {
       if (!params[key]) delete params[key];
@@ -98,16 +102,13 @@ const fetchLogs = async () => {
     logs.value = resp.logs;
     totalLogs.value = resp.total;
 
-    // 如果没有实际数据，使用模拟数据展示效果
     if (logs.value.length === 0) {
       logs.value = mockLogs;
       totalLogs.value = mockLogs.length;
-      // 只在没有实际数据时显示提示信息
       ElMessage.info('Showing sample logs for demonstration');
     }
   } catch (error) {
     console.error('Failed to fetch logs:', error);
-    // API请求失败时使用模拟数据
     logs.value = mockLogs;
     totalLogs.value = mockLogs.length;
     ElMessage.warning('Using sample logs due to API error');
@@ -116,7 +117,6 @@ const fetchLogs = async () => {
   }
 };
 
-// 开启/关闭自动刷新
 const toggleAutoRefresh = (value) => {
   autoRefresh.value = value;
   if (value) {
@@ -128,17 +128,13 @@ const toggleAutoRefresh = (value) => {
   }
 };
 
-// 开始自动刷新
 const startAutoRefresh = () => {
-  // 先清除可能存在的定时器
   stopAutoRefresh();
-  // 设置新的定时器
   refreshTimer = setInterval(() => {
     fetchLogs();
   }, refreshInterval.value);
 };
 
-// 停止自动刷新
 const stopAutoRefresh = () => {
   if (refreshTimer) {
     clearInterval(refreshTimer);
@@ -146,18 +142,16 @@ const stopAutoRefresh = () => {
   }
 };
 
-// 格式化JSON字符串，添加错误处理
 const parseJson = (jsonString) => {
   if (!jsonString) return null;
   try {
     return JSON.parse(jsonString);
   } catch (error) {
     console.error('Failed to parse JSON:', error);
-    return jsonString; // 如果解析失败，返回原始字符串
+    return jsonString;
   }
 };
 
-// 复制内容到剪贴板
 const copyToClipboard = (type) => {
   const content = type === 'request' ? currentLog.value?.request : currentLog.value?.response;
   const formatted = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
@@ -178,38 +172,30 @@ const fetchModels = async () => {
   }
 };
 
-// 格式化时间，只显示日期、时、分、秒
 const formatDateTime = (dateTime) => {
   if (!dateTime) return '';
   const date = new Date(dateTime);
-  // 获取年、月、日
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
-  // 获取时、分、秒
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
   const seconds = String(date.getSeconds()).padStart(2, '0');
-  // 组合成日期时间字符串
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
-// 从请求中提取最后一条消息内容
 const getLastMessageContent = (requestString) => {
   if (!requestString) return 'N/A';
   try {
     const request = JSON.parse(requestString);
     
-    // 检查是否有messages数组（OpenAI风格）
     if (request.messages && Array.isArray(request.messages) && request.messages.length > 0) {
-      // 找到最后一条user或assistant的消息
       const lastUserMessage = request.messages
         .filter(msg => msg.role === 'user')
         .pop();
       const contentRaw = lastUserMessage.content
       let result = '';
     if (Array.isArray(contentRaw)) {
-        // 情况1：content是数组 → 过滤出text类型的元素，取最后一个的text值
         const validTextItems = contentRaw.filter(item =>
           item?.type === 'text' && typeof item.text === 'string'
         );
@@ -217,7 +203,6 @@ const getLastMessageContent = (requestString) => {
           result = validTextItems[validTextItems.length - 1].text;
         }
       } else if (typeof contentRaw === 'string') {
-        // 情况2：content是字符串 → 直接赋值
         result = contentRaw;
       }
       const content = result.replace(/\n/g, '')
@@ -228,12 +213,10 @@ const getLastMessageContent = (requestString) => {
       return content;
     }
     
-    // 检查是否有prompt字段（Claude风格）
     if (request.prompt) {
       return request.prompt;
     }
     
-    // 默认返回请求的摘要
     return 'Request content not available';
   } catch (error) {
     console.error('Failed to parse request:', error);
@@ -244,6 +227,7 @@ const getLastMessageContent = (requestString) => {
 const viewLogDetails = (log) => {
   currentLog.value = log;
   dialogVisible.value = true;
+  activeTab.value = 'request';
 };
 
 const resetFilters = () => {
@@ -267,12 +251,38 @@ const handleCurrentChange = (current) => {
   fetchLogs();
 };
 
+const hasTools = (requestString) => {
+  try {
+    const data = JSON.parse(requestString);
+    return data.tools && data.tools.length > 0;
+  } catch {
+    return false;
+  }
+};
+
+const getToolCount = (requestString) => {
+  try {
+    const data = JSON.parse(requestString);
+    return data.tools?.length || 0;
+  } catch {
+    return 0;
+  }
+};
+
+const getMessageCount = (requestString) => {
+  try {
+    const data = JSON.parse(requestString);
+    return data.messages?.length || (data.prompt ? 1 : 0);
+  } catch {
+    return 0;
+  }
+};
+
 onMounted(() => {
   fetchLogs();
   fetchModels();
 });
 
-// 组件卸载时清除定时器
 onUnmounted(() => {
   stopAutoRefresh();
 });
@@ -320,6 +330,24 @@ onUnmounted(() => {
           </div>
         </template>
       </el-table-column>
+      <el-table-column label="Info" width="140" align="center">
+        <template #default="{ row }">
+          <div class="info-badges">
+            <el-tooltip content="Messages" placement="top">
+              <el-tag size="small" type="success" class="info-tag">
+                <el-icon><ChatDotRound /></el-icon>
+                {{ getMessageCount(row.request) }}
+              </el-tag>
+            </el-tooltip>
+            <el-tooltip v-if="hasTools(row.request)" content="Tools" placement="top">
+              <el-tag size="small" type="warning" class="info-tag">
+                <el-icon><Cpu /></el-icon>
+                {{ getToolCount(row.request) }}
+              </el-tag>
+            </el-tooltip>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="Actions" width="100" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="viewLogDetails(row)">View</el-button>
@@ -339,17 +367,65 @@ onUnmounted(() => {
       ></el-pagination>
     </div>
 
-    <el-dialog title="Log Details" v-model="dialogVisible" width="80%" v-if="currentLog">
+    <el-dialog 
+      title="Log Details" 
+      v-model="dialogVisible" 
+      width="90%" 
+      v-if="currentLog"
+      :close-on-click-modal="false"
+    >
       <div class="log-details">
         <div class="log-header">
           <div class="log-item"><strong>ID:</strong> {{ currentLog.id }}</div>
           <div class="log-item"><strong>Model:</strong> {{ currentLog.modelName }}</div>
           <div class="log-item"><strong>User Token:</strong> {{ currentLog.userToken }}</div>
           <div class="log-item"><strong>Created At:</strong> {{ formatDateTime(currentLog.createdAt) }}</div>
+          <div class="log-item" v-if="currentLog.responseTime">
+            <strong>Response Time:</strong> 
+            <el-tag size="small" type="info">{{ currentLog.responseTime }}ms</el-tag>
+          </div>
         </div>
-        <div class="log-content">
-          <div class="log-section">
-            <div class="section-header">
+
+        <div class="view-mode-toggle">
+          <el-radio-group v-model="viewMode" size="small">
+            <el-radio-button value="visual">
+              <el-icon><View /></el-icon>
+              Visual
+            </el-radio-button>
+            <el-radio-button value="json">
+              <el-icon><Document /></el-icon>
+              JSON
+            </el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <template v-if="viewMode === 'visual'">
+          <el-tabs v-model="activeTab" class="log-tabs">
+            <el-tab-pane label="Request" name="request">
+              <div class="tab-content">
+                <MessageViewer :data="parseJson(currentLog.request)" />
+              </div>
+            </el-tab-pane>
+            <el-tab-pane label="Response" name="response">
+              <div class="tab-content">
+                <ResponseViewer 
+                  :data="parseJson(currentLog.response)" 
+                  :response-time="currentLog.responseTime"
+                />
+              </div>
+            </el-tab-pane>
+            <el-tab-pane v-if="currentLog.streamResponse" label="Stream Response" name="stream">
+              <div class="tab-content">
+                <ResponseViewer :data="parseJson(currentLog.streamResponse)" />
+              </div>
+            </el-tab-pane>
+          </el-tabs>
+        </template>
+
+        <template v-else>
+          <div class="log-content">
+            <div class="log-section">
+              <div class="section-header">
                 <h4>Request</h4>
                 <el-button size="small" type="text" @click="copyToClipboard('request')">
                   Copy
@@ -366,9 +442,9 @@ onUnmounted(() => {
                 class="json-content"
               />
               <div v-else class="json-content">Invalid JSON format</div>
-          </div>
-          <div class="log-section">
-            <div class="section-header">
+            </div>
+            <div class="log-section">
+              <div class="section-header">
                 <h4>Response</h4>
                 <el-button size="small" type="text" @click="copyToClipboard('response')">
                   Copy
@@ -385,8 +461,9 @@ onUnmounted(() => {
                 class="json-content"
               />
               <div v-else class="json-content">Invalid JSON format</div>
+            </div>
           </div>
-        </div>
+        </template>
       </div>
       <template #footer>
         <el-button @click="dialogVisible = false">Close</el-button>
@@ -422,15 +499,38 @@ onUnmounted(() => {
 
 .log-header {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
-  margin-bottom: 20px;
-  padding-bottom: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
   border-bottom: 1px solid #eee;
 }
 
 .log-item {
   margin-bottom: 5px;
+}
+
+.view-mode-toggle {
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.view-mode-toggle .el-radio-button :deep(.el-radio-button__inner) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.log-tabs {
+  min-height: 400px;
+}
+
+.tab-content {
+  padding: 16px;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #ebeef5;
 }
 
 .log-content {
@@ -474,7 +574,6 @@ onUnmounted(() => {
   word-wrap: break-word;
 }
 
-/* 调整vue-json-pretty的样式以适应我们的布局 */
 :deep(.vue-json-pretty) {
   font-family: 'Courier New', Courier, monospace;
   font-size: 13px;
@@ -505,7 +604,6 @@ onUnmounted(() => {
   font-style: italic;
 }
 
-/* 消息内容样式 */
 .message-content {
   color: #666;
   font-size: 14px;
@@ -519,5 +617,22 @@ onUnmounted(() => {
 
 .message-content:hover {
   color: #409eff;
+}
+
+.info-badges {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.info-tag {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.info-tag .el-icon {
+  font-size: 12px;
 }
 </style>

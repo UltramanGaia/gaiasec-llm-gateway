@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,12 +90,17 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]interfac
 	return body, requestBody, modelName, userToken, isStream, nil
 }
 
+func calculateFingerprint(request, modelName, userToken string) string {
+	data := request + "|" + modelName + "|" + userToken
+	hash := md5.Sum([]byte(data))
+	return hex.EncodeToString(hash[:])
+}
+
 // handleCache 检查缓存，如果命中则返回响应并返回true，否则返回false
 func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName, userToken string, isStream bool) bool {
-	// 检查缓存：根据请求体、模型名称和用户令牌查询是否有相同请求
+	fingerprint := calculateFingerprint(string(body), modelName, userToken)
 	var existingLog models.RequestLog
-	if err := h.DB.Where("request = ? AND model_name = ? AND user_token = ?", string(body), modelName, userToken).First(&existingLog).Error; err != nil {
-		// 缓存未命中，继续处理请求
+	if err := h.DB.Where("fingerprint = ?", fingerprint).First(&existingLog).Error; err != nil {
 		return false
 	}
 
@@ -527,11 +534,13 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 创建请求日志条目（仅当缓存未命中时）
+	fingerprint := calculateFingerprint(string(body), modelName, userToken)
 	reqLog := models.RequestLog{
-		UserToken: userToken,
-		CreatedAt: time.Now(),
-		ModelName: modelName,
-		Request:   string(body),
+		UserToken:   userToken,
+		CreatedAt:   time.Now(),
+		ModelName:   modelName,
+		Request:     string(body),
+		Fingerprint: fingerprint,
 	}
 	defer func() {
 		if err := h.DB.Create(&reqLog).Error; err != nil {

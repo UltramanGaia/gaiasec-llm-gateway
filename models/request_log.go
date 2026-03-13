@@ -9,6 +9,7 @@ type RequestLog struct {
 	UserToken      string    `gorm:"index" json:"userToken"`
 	ModelName      string    `gorm:"index" json:"modelName"`
 	ProviderID     uint      `gorm:"index" json:"providerId"`
+	Fingerprint    string    `gorm:"index;size:32" json:"fingerprint"`
 	ResponseTime   int64     `json:"responseTime"`
 	Request        string    `gorm:"type:text" json:"request"`
 	Response       string    `gorm:"type:text" json:"response"`

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"llm-gateway/config"
 	"llm-gateway/handlers"
 	"llm-gateway/models"
 
@@ -65,8 +66,8 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func initDB() (*gorm.DB, error) {
-	db, err := gorm.Open(sqlite.Open("llm.db"), &gorm.Config{})
+func initDB(dbPath string) (*gorm.DB, error) {
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
@@ -99,22 +100,36 @@ func initDB() (*gorm.DB, error) {
 }
 
 var host string
-var port int64
+var port int
 
 func init() {
-	flag.StringVar(&host, "host", "0.0.0.0", "Host to listen on")
-	flag.Int64Var(&port, "port", 8090, "Port to listen on")
+	flag.StringVar(&host, "host", "", "Host to listen on (overrides env variable)")
+	flag.IntVar(&port, "port", 0, "Port to listen on (overrides env variable)")
 	flag.Parse()
 }
 
 // main函数入口
 func main() {
-	db, err := initDB()
+	cfg := config.LoadConfig()
+
+	db, err := initDB(cfg.DatabasePath)
 	if err != nil {
 		log.Fatal("Failed to initialize database:", err)
 	}
 
-	// 初始化各个处理器
+	models.StartLogCleanupTask(db, cfg.LogMaxCount, cfg.LogKeepCount, cfg.CleanupInterval)
+	log.Infof("Log cleanup task started: maxCount=%d, keepCount=%d, interval=%v", cfg.LogMaxCount, cfg.LogKeepCount, cfg.CleanupInterval)
+
+	listenHost := cfg.ServerHost
+	listenPort := cfg.ServerPort
+
+	if host != "" {
+		listenHost = host
+	}
+	if port != 0 {
+		listenPort = port
+	}
+
 	authHandler := handlers.NewAuthHandler(db)
 	chatHandler := handlers.NewChatHandler(db)
 	providerHandler := handlers.NewProviderHandler(db)
@@ -244,8 +259,7 @@ func main() {
 		http.ServeFile(w, r, "./frontend/dist/index.html")
 	})
 
-	// 启动服务器，使用 accessLogMiddleware 包装 mux
-	address := fmt.Sprintf("%s:%d", host, port)
+	address := fmt.Sprintf("%s:%d", listenHost, listenPort)
 	log.Printf("Server starting on %s\n", address)
 	if err := http.ListenAndServe(address, accessLogMiddleware(mux)); err != nil {
 		log.Fatal("Server failed to start:", err)
