@@ -31,3 +31,13 @@ export const getLogDetail = (id) => {
 export const clearLogs = () => {
   return axios.delete('/logs');
 };
+
+/**
+ * 重放日志请求
+ * @param {string} id - 日志ID
+ * @param {Object} [override] - 覆盖参数
+ * @returns {Promise}
+ */
+export const replayLog = (id, override = {}) => {
+  return axios.post(`/logs/${id}/replay`, { override });
+};

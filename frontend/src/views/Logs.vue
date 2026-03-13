@@ -1,12 +1,15 @@
 <script setup>
-import { ref, onMounted, reactive, computed, onUnmounted } from 'vue';
-import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem, ElSwitch, ElRadioGroup, ElRadioButton, ElTabs, ElTabPane } from 'element-plus';
-import { View, Document, ChatDotRound, Cpu } from '@element-plus/icons-vue';
+import { ref, onMounted, reactive, computed, onUnmounted, shallowRef } from 'vue';
+import { ElTable, ElTableColumn, ElButton, ElInput, ElSelect, ElOption, ElDatePicker, ElPagination, ElMessage, ElDialog, ElForm, ElFormItem, ElSwitch, ElRadioGroup, ElRadioButton, ElTabs, ElTabPane, ElAlert } from 'element-plus';
+import { View, Document, ChatDotRound, Cpu, Refresh } from '@element-plus/icons-vue';
 import { logsAPI, modelMappingsAPI } from '../api';
 import VueJsonPretty from 'vue-json-pretty';
 import 'vue-json-pretty/lib/styles.css';
 import MessageViewer from '../components/MessageViewer.vue';
 import ResponseViewer from '../components/ResponseViewer.vue';
+import { Codemirror } from 'vue-codemirror';
+import { json } from '@codemirror/lang-json';
+import { oneDark } from '@codemirror/theme-one-dark';
 
 const logs = ref([]);
 const totalLogs = ref(0);
@@ -89,6 +92,15 @@ const currentLog = ref(null);
 const models = ref([]);
 const viewMode = ref('visual');
 const activeTab = ref('request');
+
+const replayDialogVisible = ref(false);
+const replayLoading = ref(false);
+const replayLog = ref(null);
+const editableRequest = ref('');
+const replayResult = ref(null);
+const replayViewMode = ref('compare');
+
+const editorExtensions = [json(), oneDark];
 
 const fetchLogs = async () => {
   try {
@@ -230,6 +242,86 @@ const viewLogDetails = (log) => {
   activeTab.value = 'request';
 };
 
+const openReplayDialog = (log) => {
+  replayLog.value = log;
+  editableRequest.value = log.request;
+  replayResult.value = null;
+  replayViewMode.value = 'compare';
+  replayDialogVisible.value = true;
+};
+
+const executeReplay = async () => {
+  if (!editableRequest.value) {
+    ElMessage.warning('Request cannot be empty');
+    return;
+  }
+
+  try {
+    let override = {};
+    try {
+      const originalRequest = JSON.parse(replayLog.value.request);
+      const modifiedRequest = JSON.parse(editableRequest.value);
+      
+      for (const key of Object.keys(modifiedRequest)) {
+        if (JSON.stringify(originalRequest[key]) !== JSON.stringify(modifiedRequest[key])) {
+          override[key] = modifiedRequest[key];
+        }
+      }
+    } catch (e) {
+      ElMessage.error('Invalid JSON format');
+      return;
+    }
+
+    replayLoading.value = true;
+    const result = await logsAPI.replayLog(replayLog.value.id, override);
+    replayResult.value = result;
+    ElMessage.success('Replay completed');
+  } catch (error) {
+    console.error('Replay failed:', error);
+    ElMessage.error('Replay failed: ' + (error.response?.data?.error || error.message));
+  } finally {
+    replayLoading.value = false;
+  }
+};
+
+const resetReplayRequest = () => {
+  if (replayLog.value) {
+    editableRequest.value = replayLog.value.request;
+  }
+};
+
+const formatEditorContent = () => {
+  try {
+    const obj = JSON.parse(editableRequest.value);
+    editableRequest.value = JSON.stringify(obj, null, 2);
+    ElMessage.success('JSON formatted');
+  } catch (e) {
+    ElMessage.error('Invalid JSON format');
+  }
+};
+
+const formatJsonString = (str) => {
+  try {
+    const obj = JSON.parse(str);
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return str;
+  }
+};
+
+const getResponseContent = (responseStr) => {
+  if (!responseStr) return 'No response';
+  try {
+    const resp = JSON.parse(responseStr);
+    if (resp.choices && resp.choices[0]) {
+      return resp.choices[0].message?.content || resp.choices[0].delta?.content || 'No content';
+    }
+    return responseStr;
+  } catch {
+    return responseStr;
+  }
+};
+
 const resetFilters = () => {
   Object.keys(filters).forEach(key => {
     if (key !== 'page' && key !== 'pageSize') {
@@ -348,9 +440,12 @@ onUnmounted(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="Actions" width="100" fixed="right">
+      <el-table-column label="Actions" width="160" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="viewLogDetails(row)">View</el-button>
+          <el-button size="small" type="warning" @click="openReplayDialog(row)">
+            <el-icon><Refresh /></el-icon>
+          </el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -467,6 +562,128 @@ onUnmounted(() => {
       </div>
       <template #footer>
         <el-button @click="dialogVisible = false">Close</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog 
+      title="Replay Debug" 
+      v-model="replayDialogVisible" 
+      width="95%" 
+      v-if="replayLog"
+      :close-on-click-modal="false"
+      top="5vh"
+    >
+      <div class="replay-container">
+        <div class="replay-header">
+          <div class="log-item"><strong>ID:</strong> {{ replayLog.id }}</div>
+          <div class="log-item"><strong>Model:</strong> {{ replayLog.modelName }}</div>
+          <div class="log-item"><strong>Created At:</strong> {{ formatDateTime(replayLog.createdAt) }}</div>
+        </div>
+
+        <div class="replay-editor">
+          <div class="editor-header">
+            <h4>Request (Editable)</h4>
+            <div class="editor-actions">
+              <el-button size="small" @click="resetReplayRequest">Reset</el-button>
+              <el-button size="small" @click="formatEditorContent">Format JSON</el-button>
+            </div>
+          </div>
+          <div class="codemirror-container">
+            <codemirror
+              v-model="editableRequest"
+              :style="{ height: '300px' }"
+              :extensions="editorExtensions"
+              :autofocus="true"
+              :indent-with-tab="true"
+              :tab-size="2"
+            />
+          </div>
+          <div class="replay-actions">
+            <el-button type="primary" @click="executeReplay" :loading="replayLoading">
+              <el-icon><Refresh /></el-icon>
+              Execute Replay
+            </el-button>
+          </div>
+        </div>
+
+        <div v-if="replayResult" class="replay-result">
+          <div class="result-header">
+            <h4>Result</h4>
+            <el-radio-group v-model="replayViewMode" size="small">
+              <el-radio-button value="compare">Compare</el-radio-button>
+              <el-radio-button value="original">Original</el-radio-button>
+              <el-radio-button value="new">New Response</el-radio-button>
+            </el-radio-group>
+          </div>
+
+          <div v-if="replayResult.error" class="error-message">
+            <el-alert type="error" :title="replayResult.error" show-icon />
+          </div>
+
+          <div v-if="replayViewMode === 'compare'" class="compare-view">
+            <div class="compare-section">
+              <div class="section-header">
+                <h5>Original Response</h5>
+                <el-tag size="small" type="info" v-if="replayLog.responseTime">{{ replayLog.responseTime }}ms</el-tag>
+              </div>
+              <div class="response-content">
+                <vue-json-pretty 
+                  v-if="parseJson(replayResult.originalResponse)" 
+                  :data="parseJson(replayResult.originalResponse)"
+                  :expand-depth="2"
+                  :show-length="true"
+                  theme="light"
+                />
+                <pre v-else>{{ replayResult.originalResponse }}</pre>
+              </div>
+            </div>
+            <div class="compare-section">
+              <div class="section-header">
+                <h5>New Response</h5>
+                <el-tag size="small" type="success" v-if="replayResult.responseTime">{{ replayResult.responseTime }}ms</el-tag>
+              </div>
+              <div class="response-content">
+                <vue-json-pretty 
+                  v-if="parseJson(replayResult.newResponse)" 
+                  :data="parseJson(replayResult.newResponse)"
+                  :expand-depth="2"
+                  :show-length="true"
+                  theme="light"
+                />
+                <pre v-else>{{ replayResult.newResponse }}</pre>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="replayViewMode === 'original'" class="single-view">
+            <vue-json-pretty 
+              v-if="parseJson(replayResult.originalResponse)" 
+              :data="parseJson(replayResult.originalResponse)"
+              :expand-depth="3"
+              :show-length="true"
+              theme="light"
+            />
+            <pre v-else>{{ replayResult.originalResponse }}</pre>
+          </div>
+
+          <div v-else class="single-view">
+            <vue-json-pretty 
+              v-if="parseJson(replayResult.newResponse)" 
+              :data="parseJson(replayResult.newResponse)"
+              :expand-depth="3"
+              :show-length="true"
+              theme="light"
+            />
+            <pre v-else>{{ replayResult.newResponse }}</pre>
+          </div>
+
+          <div v-if="replayResult.actualModelName" class="result-info">
+            <el-tag size="small">Actual Model: {{ replayResult.actualModelName }}</el-tag>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="replayDialogVisible = false">Close</el-button>
       </template>
     </el-dialog>
   </div>
@@ -634,5 +851,139 @@ onUnmounted(() => {
 
 .info-tag .el-icon {
   font-size: 12px;
+}
+
+.replay-container {
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.replay-header {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.replay-editor {
+  margin-bottom: 20px;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.editor-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.codemirror-container {
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.codemirror-container :deep(.cm-editor) {
+  font-size: 13px;
+}
+
+.codemirror-container :deep(.cm-scroller) {
+  font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+}
+
+.replay-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: center;
+}
+
+.replay-result {
+  margin-top: 20px;
+  border-top: 1px solid #eee;
+  padding-top: 16px;
+}
+
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.result-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.error-message {
+  margin-bottom: 16px;
+}
+
+.compare-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.compare-section {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.compare-section .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #eee;
+}
+
+.compare-section .section-header h5 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.response-content {
+  padding: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+  background-color: #fafafa;
+}
+
+.response-content pre {
+  margin: 0;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.single-view {
+  padding: 16px;
+  background-color: #fafafa;
+  border-radius: 8px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.result-info {
+  margin-top: 12px;
+  text-align: right;
 }
 </style>

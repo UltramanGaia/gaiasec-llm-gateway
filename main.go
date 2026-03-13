@@ -229,16 +229,27 @@ func main() {
 
 	// Log detail API route with authentication
 	mux.HandleFunc("/api/logs/", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			pathParts := strings.Split(r.URL.Path, "/")
-			if len(pathParts) >= 4 {
-				id := pathParts[3]
-				if id != "" {
+		pathParts := strings.Split(r.URL.Path, "/")
+		if len(pathParts) >= 4 {
+			id := pathParts[3]
+			if id != "" {
+				if len(pathParts) >= 5 && pathParts[4] == "replay" {
+					if r.Method == "POST" {
+						r.URL.RawQuery = "id=" + id
+						logHandler.ReplayLog(w, r)
+						return
+					}
+					http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				if r.Method == "GET" {
 					r.URL.RawQuery = "id=" + id
 					logHandler.GetLogDetail(w, r)
 					return
 				}
 			}
+		}
+		if r.Method == "GET" {
 			http.Error(w, "Log ID is required", http.StatusBadRequest)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

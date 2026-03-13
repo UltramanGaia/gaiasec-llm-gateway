@@ -1,13 +1,19 @@
 package handlers
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
 	"llm-gateway/models"
+	log "github.com/sirupsen/logrus"
 )
 
 // LogHandler 处理RequestLog相关的API请求
@@ -125,4 +131,298 @@ func (h *LogHandler) ClearLogs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "All logs cleared successfully",
 	})
+}
+
+// ReplayRequest 定义重放请求的结构
+type ReplayRequest struct {
+	Override map[string]interface{} `json:"override"`
+}
+
+// ReplayResponse 定义重放响应的结构
+type ReplayResponse struct {
+	OriginalRequest  string      `json:"originalRequest"`
+	ModifiedRequest  string      `json:"modifiedRequest"`
+	OriginalResponse string      `json:"originalResponse"`
+	NewResponse      string      `json:"newResponse"`
+	ProviderID       uint        `json:"providerId"`
+	ModelName        string      `json:"modelName"`
+	ActualModelName  string      `json:"actualModelName"`
+	ResponseTime     int64       `json:"responseTime"`
+	Error            string      `json:"error,omitempty"`
+}
+
+// ReplayLog 重放指定的请求日志，支持覆盖参数
+func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "Log ID is required", http.StatusBadRequest)
+		return
+	}
+
+	var reqLog models.RequestLog
+	if err := h.DB.First(&reqLog, id).Error; err != nil {
+		http.Error(w, "Log not found", http.StatusNotFound)
+		return
+	}
+
+	var replayReq ReplayRequest
+	if err := json.NewDecoder(r.Body).Decode(&replayReq); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var originalRequest map[string]interface{}
+	if err := json.Unmarshal([]byte(reqLog.Request), &originalRequest); err != nil {
+		http.Error(w, "Failed to parse original request", http.StatusInternalServerError)
+		return
+	}
+
+	modifiedRequest := make(map[string]interface{})
+	for k, v := range originalRequest {
+		modifiedRequest[k] = v
+	}
+	for k, v := range replayReq.Override {
+		modifiedRequest[k] = v
+	}
+
+	modelName, ok := modifiedRequest["model"].(string)
+	if !ok || modelName == "" {
+		modelName = reqLog.ModelName
+		modifiedRequest["model"] = modelName
+	}
+
+	var mapping models.ModelMapping
+	if err := h.DB.Where("alias = ?", modelName).First(&mapping).Error; err != nil {
+		http.Error(w, "Model mapping not found: "+modelName, http.StatusNotFound)
+		return
+	}
+
+	var provider models.Provider
+	if err := h.DB.First(&provider, mapping.ProviderID).Error; err != nil {
+		http.Error(w, "Provider not found", http.StatusNotFound)
+		return
+	}
+
+	modifiedRequest["model"] = mapping.ModelName
+	updatedBody, err := json.Marshal(modifiedRequest)
+	if err != nil {
+		http.Error(w, "Failed to marshal modified request", http.StatusInternalServerError)
+		return
+	}
+
+	providerURL := provider.BaseURL
+	if !strings.HasSuffix(providerURL, "/") {
+		providerURL += "/"
+	}
+	providerURL += "chat/completions"
+
+	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(updatedBody))
+	if err != nil {
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+
+	isStream := false
+	if streamValue, ok := modifiedRequest["stream"].(bool); ok && streamValue {
+		isStream = true
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Failed to send request to provider: " + err.Error())
+		response := ReplayResponse{
+			OriginalRequest:  reqLog.Request,
+			ModifiedRequest:  string(updatedBody),
+			OriginalResponse: reqLog.Response,
+			Error:            err.Error(),
+			ProviderID:       provider.ID,
+			ModelName:        modelName,
+			ActualModelName:  mapping.ModelName,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+	defer resp.Body.Close()
+
+	responseTime := time.Since(startTime).Milliseconds()
+
+	var newResponse string
+	if isStream {
+		newResponse = h.processStreamResponse(resp)
+	} else {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			http.Error(w, "Failed to read response", http.StatusInternalServerError)
+			return
+		}
+		newResponse = string(respBody)
+	}
+
+	response := ReplayResponse{
+		OriginalRequest:  reqLog.Request,
+		ModifiedRequest:  string(updatedBody),
+		OriginalResponse: reqLog.Response,
+		NewResponse:      newResponse,
+		ProviderID:       provider.ID,
+		ModelName:        modelName,
+		ActualModelName:  mapping.ModelName,
+		ResponseTime:     responseTime,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// processStreamResponse 处理流式响应，拼接成完整的非流式格式
+func (h *LogHandler) processStreamResponse(resp *http.Response) string {
+	var fullResponse strings.Builder
+	var mu sync.Mutex
+	var contentOnly strings.Builder
+	var reasoningContentOnly strings.Builder
+
+	var streamResponse struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index int `json:"index"`
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			}
+			Logprobs     interface{} `json:"logprobs"`
+			FinishReason string      `json:"finish_reason"`
+		}
+		Usage struct {
+			PromptTokens       int `json:"prompt_tokens"`
+			CompletionTokens   int `json:"completion_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			PromptTokensDetail struct {
+				CachedTokens int `json:"cached_tokens"`
+			}
+			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+		}
+	}
+
+	var firstID, firstObject, firstModel string
+	var firstCreated int64
+	var hasMetadata bool
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				log.Error("Error reading stream: " + err.Error())
+			}
+			break
+		}
+
+		mu.Lock()
+		fullResponse.WriteString(line)
+		mu.Unlock()
+
+		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			jsonStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
+			if jsonStr != "" && jsonStr != "[DONE]" {
+				if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err == nil {
+					if !hasMetadata && streamResponse.ID != "" {
+						firstID = streamResponse.ID
+						firstObject = streamResponse.Object
+						firstCreated = streamResponse.Created
+						firstModel = streamResponse.Model
+						hasMetadata = true
+					}
+					if len(streamResponse.Choices) > 0 {
+						if streamResponse.Choices[0].Delta.Content != "" {
+							mu.Lock()
+							contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
+							mu.Unlock()
+						}
+						if streamResponse.Choices[0].Delta.ReasoningContent != "" {
+							mu.Lock()
+							reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
+							mu.Unlock()
+						}
+					}
+				}
+			}
+		}
+	}
+
+	cachedResp := struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index   int `json:"index"`
+			Message struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content,omitempty"`
+			} `json:"message"`
+			FinishReason string      `json:"finish_reason"`
+			Logprobs     interface{} `json:"logprobs"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens       int `json:"prompt_tokens"`
+			CompletionTokens   int `json:"completion_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			PromptTokensDetail struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_detail"`
+			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+		} `json:"usage"`
+	}{
+		ID:      firstID,
+		Object:  firstObject,
+		Created: firstCreated,
+		Model:   firstModel,
+		Choices: []struct {
+			Index   int `json:"index"`
+			Message struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content,omitempty"`
+			} `json:"message"`
+			FinishReason string      `json:"finish_reason"`
+			Logprobs     interface{} `json:"logprobs"`
+		}{
+			{
+				Index: 0,
+				Message: struct {
+					Role             string `json:"role"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content,omitempty"`
+				}{
+					Role:             "assistant",
+					Content:          contentOnly.String(),
+					ReasoningContent: reasoningContentOnly.String(),
+				},
+				FinishReason: "stop",
+				Logprobs:     nil,
+			},
+		},
+	}
+
+	cachedResp.Usage.PromptTokens = streamResponse.Usage.PromptTokens
+	cachedResp.Usage.CompletionTokens = streamResponse.Usage.CompletionTokens
+	cachedResp.Usage.TotalTokens = streamResponse.Usage.TotalTokens
+	cachedResp.Usage.PromptTokensDetail.CachedTokens = streamResponse.Usage.PromptTokensDetail.CachedTokens
+	cachedResp.Usage.PromptCacheHitTokens = streamResponse.Usage.PromptCacheHitTokens
+	cachedResp.Usage.PromptCacheMissTokens = streamResponse.Usage.PromptCacheMissTokens
+
+	respData, _ := json.Marshal(cachedResp)
+	return string(respData)
 }
