@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -257,9 +258,11 @@ func main() {
 	}))
 
 	// Frontend static files
-	// 使用文件服务器提供静态文件
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("./frontend/dist/assets"))))
-	mux.Handle("/favicon.ico", http.FileServer(http.Dir("./frontend/dist")))
+	// 使用混合文件系统：优先使用本地文件系统，不存在时使用 embed
+	frontendFS := getFrontendFS()
+	assetsFS := getAssetsFS()
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsFS))))
+	mux.Handle("/favicon.ico", http.FileServer(http.FS(frontendFS)))
 
 	// Catch-all handler for non-API routes - serve frontend index.html
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +270,13 @@ func main() {
 			http.Error(w, "API endpoint not found", http.StatusNotFound)
 			return
 		}
-		http.ServeFile(w, r, "./frontend/dist/index.html")
+		data, err := fs.ReadFile(frontendFS, "index.html")
+		if err != nil {
+			http.Error(w, "Failed to load frontend", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
 	})
 
 	address := fmt.Sprintf("%s:%d", listenHost, listenPort)
