@@ -13,27 +13,19 @@ import (
 	"llm-gateway/models"
 
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/sqlite"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
-
-// responseWriterWrapper 用于包装 http.ResponseWriter 以捕获响应状态码
-// 用于实现 access log 记录
 
 type responseWriterWrapper struct {
 	http.ResponseWriter
 	statusCode int
 }
 
-// WriteHeader 重写 WriteHeader 方法以捕获状态码
-
 func (rw *responseWriterWrapper) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
-
-// Write 重写 Write 方法以确保默认状态码为 200
 
 func (rw *responseWriterWrapper) Write(b []byte) (int, error) {
 	if rw.statusCode == 0 {
@@ -42,59 +34,39 @@ func (rw *responseWriterWrapper) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
-// accessLogMiddleware 实现 access log 中间件
-// 记录所有 HTTP 请求的访问日志，包括请求方法、URL、状态码、响应时间等
-
 func accessLogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 记录请求开始时间
 		startTime := time.Now()
 
-		// 创建响应包装器以捕获状态码
 		rw := &responseWriterWrapper{
 			ResponseWriter: w,
 			statusCode:     0,
 		}
 
-		// 处理请求
 		next.ServeHTTP(rw, r)
 
-		// 计算响应时间
 		duration := time.Since(startTime)
 
-		// 记录 access log
 		log.Infof("Access: %s %s %d %d %s", r.Method, r.URL.Path, rw.statusCode, duration.Milliseconds(), r.UserAgent())
 	})
 }
 
-func initDB(dbPath string) (*gorm.DB, error) {
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+func initDB(cfg *config.Config) (*gorm.DB, error) {
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName)
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
 
-	// Auto migrate models
 	err = db.AutoMigrate(
 		&models.Provider{},
 		&models.ModelMapping{},
 		&models.RequestLog{},
-		&models.User{},
 	)
 	if err != nil {
 		return nil, err
-	}
-
-	// 创建默认管理员用户
-	var count int64
-	db.Model(&models.User{}).Count(&count)
-	if count == 0 {
-		password, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
-		admin := models.User{
-			Username: "admin",
-			Password: string(password),
-		}
-		db.Create(&admin)
-		log.Info("Created default admin user: username=admin, password=admin123")
 	}
 
 	return db, nil
@@ -109,11 +81,10 @@ func init() {
 	flag.Parse()
 }
 
-// main函数入口
 func main() {
 	cfg := config.LoadConfig()
 
-	db, err := initDB(cfg.DatabasePath)
+	db, err := initDB(cfg)
 	if err != nil {
 		log.Fatal("Failed to initialize database:", err)
 	}
@@ -138,17 +109,13 @@ func main() {
 	logHandler := handlers.NewLogHandler(db)
 	statsHandler := handlers.NewStatsHandler(db)
 
-	// 创建一个新的ServeMux
 	mux := http.NewServeMux()
 
-	// 登录路由不需要认证
 	mux.HandleFunc("/api/login", authHandler.Login)
 
-	// API routes with authentication
 	mux.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
 	mux.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
 
-	// Provider API routes with authentication
 	mux.HandleFunc("/api/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			providerHandler.GetProviders(w, r)
@@ -169,7 +136,6 @@ func main() {
 		}
 	}))
 
-	// Model Mapping API routes with authentication
 	mux.HandleFunc("/api/model-mappings/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelMappingHandler.GetModelMapping(w, r)
@@ -190,7 +156,6 @@ func main() {
 		}
 	}))
 
-	// Stats API routes with authentication
 	mux.HandleFunc("/api/stats", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetStats(w, r)
@@ -199,7 +164,6 @@ func main() {
 		}
 	}))
 
-	// Provider stats API route with authentication
 	mux.HandleFunc("/api/stats/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetProviderStats(w, r)
@@ -208,7 +172,6 @@ func main() {
 		}
 	}))
 
-	// Model stats API route with authentication
 	mux.HandleFunc("/api/stats/models", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetModelStats(w, r)
@@ -217,7 +180,6 @@ func main() {
 		}
 	}))
 
-	// Log API routes with authentication
 	mux.HandleFunc("/api/logs", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			logHandler.GetLogs(w, r)
@@ -228,7 +190,6 @@ func main() {
 		}
 	}))
 
-	// Log detail API route with authentication
 	mux.HandleFunc("/api/logs/", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		pathParts := strings.Split(r.URL.Path, "/")
 		if len(pathParts) >= 4 {
@@ -257,14 +218,11 @@ func main() {
 		}
 	}))
 
-	// Frontend static files
-	// 使用混合文件系统：优先使用本地文件系统，不存在时使用 embed
 	frontendFS := getFrontendFS()
 	assetsFS := getAssetsFS()
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsFS))))
 	mux.Handle("/favicon.ico", http.FileServer(http.FS(frontendFS)))
 
-	// Catch-all handler for non-API routes - serve frontend index.html
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api") {
 			http.Error(w, "API endpoint not found", http.StatusNotFound)

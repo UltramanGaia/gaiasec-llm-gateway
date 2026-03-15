@@ -144,7 +144,7 @@ type ReplayResponse struct {
 	ModifiedRequest  string      `json:"modifiedRequest"`
 	OriginalResponse string      `json:"originalResponse"`
 	NewResponse      string      `json:"newResponse"`
-	ProviderID       uint        `json:"providerId"`
+	ProviderID       string      `json:"providerId"`
 	ModelName        string      `json:"modelName"`
 	ActualModelName  string      `json:"actualModelName"`
 	ResponseTime     int64       `json:"responseTime"`
