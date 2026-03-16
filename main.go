@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -102,7 +101,6 @@ func main() {
 		listenPort = port
 	}
 
-	authHandler := handlers.NewAuthHandler(db)
 	chatHandler := handlers.NewChatHandler(db)
 	providerHandler := handlers.NewProviderHandler(db)
 	modelMappingHandler := handlers.NewModelMappingHandler(db)
@@ -111,12 +109,10 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/login", authHandler.Login)
-
 	mux.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
 	mux.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
 
-	mux.HandleFunc("/api/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			providerHandler.GetProviders(w, r)
 		} else if r.Method == "POST" {
@@ -124,9 +120,9 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/providers/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/providers/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			providerHandler.GetProvider(w, r)
 		} else if r.Method == "POST" {
@@ -134,9 +130,9 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/model-mappings/{id}", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/model-mappings/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelMappingHandler.GetModelMapping(w, r)
 		} else if r.Method == "POST" {
@@ -144,9 +140,9 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/model-mappings", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/model-mappings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelMappingHandler.GetModelMappings(w, r)
 		} else if r.Method == "POST" {
@@ -154,33 +150,33 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/stats", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetStats(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/stats/providers", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats/providers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetProviderStats(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/stats/models", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats/models", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			statsHandler.GetModelStats(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/logs", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			logHandler.GetLogs(w, r)
 		} else if r.Method == "DELETE" {
@@ -188,9 +184,9 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/logs/", handlers.JWTAuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/logs/", func(w http.ResponseWriter, r *http.Request) {
 		pathParts := strings.Split(r.URL.Path, "/")
 		if len(pathParts) >= 4 {
 			id := pathParts[3]
@@ -216,25 +212,15 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
-
-	frontendFS := getFrontendFS()
-	assetsFS := getAssetsFS()
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsFS))))
-	mux.Handle("/favicon.ico", http.FileServer(http.FS(frontendFS)))
+	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api") {
 			http.Error(w, "API endpoint not found", http.StatusNotFound)
 			return
 		}
-		data, err := fs.ReadFile(frontendFS, "index.html")
-		if err != nil {
-			http.Error(w, "Failed to load frontend", http.StatusInternalServerError)
-			return
-		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
+		w.Write([]byte("ok"))
 	})
 
 	address := fmt.Sprintf("%s:%d", listenHost, listenPort)

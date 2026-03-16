@@ -5,9 +5,7 @@ go 1.23.0
 toolchain go1.24.5
 
 require (
-	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/sirupsen/logrus v1.9.3
-	golang.org/x/crypto v0.41.0
 	gorm.io/driver/mysql v1.5.7
 	gorm.io/gorm v1.30.1
 )
