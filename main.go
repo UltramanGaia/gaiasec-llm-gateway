@@ -176,7 +176,7 @@ func main() {
 		}
 	})
 
-	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/request-logs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			logHandler.GetLogs(w, r)
 		} else if r.Method == "DELETE" {
@@ -186,7 +186,7 @@ func main() {
 		}
 	})
 
-	mux.HandleFunc("/api/logs/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/request-logs/", func(w http.ResponseWriter, r *http.Request) {
 		pathParts := strings.Split(r.URL.Path, "/")
 		if len(pathParts) >= 4 {
 			id := pathParts[3]
