@@ -261,42 +261,29 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 	return true
 }
 
-// getModelAndProvider 获取模型映射和提供商信息
-func (h *ChatHandler) getModelAndProvider(modelName string) (string, models.Provider, error) {
-	// Find model mapping
-	var mapping models.ModelMapping
-	if err := h.DB.Where("alias = ?", modelName).First(&mapping).Error; err != nil {
-		return "", models.Provider{}, err
+// getModelConfig 获取模型配置信息
+func (h *ChatHandler) getModelConfig(modelName string) (models.ModelConfig, error) {
+	var config models.ModelConfig
+	if err := h.DB.Where("name = ? AND enabled = ?", modelName, true).First(&config).Error; err != nil {
+		return models.ModelConfig{}, err
 	}
-
-	// Get provider information
-	var provider models.Provider
-	if err := h.DB.First(&provider, mapping.ProviderID).Error; err != nil {
-		return "", models.Provider{}, err
-	}
-
-	return mapping.ModelName, provider, nil
+	return config, nil
 }
 
 // sendProviderRequest 发送请求到提供商API
-func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[string]interface{}, actualModelName string, provider models.Provider, isStream bool) (*http.Response, error) {
-	// Update request with actual model name
-	requestBody["model"] = actualModelName
+func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[string]interface{}, config models.ModelConfig, isStream bool) (*http.Response, error) {
+	requestBody["model"] = config.ModelName
 	updatedBody, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, err
 	}
 
-	// 安全处理嵌套map的判断和赋值
-	// 第一步：获取"reasoning"的值，并断言为map[string]interface{}
 	reasoningVal, reasoningOk := requestBody["reasoning"].(map[string]interface{})
-	// 第二步：判断reasoning存在且是map类型，同时其下的"effort"非nil
 	if reasoningOk && reasoningVal["effort"] != nil {
 		reasoningVal["effort"] = "none"
 	}
 
-	// Create new request to provider
-	providerURL := provider.BaseURL
+	providerURL := config.APIBaseURL
 	if !strings.HasSuffix(providerURL, "/") {
 		providerURL += "/"
 	}
@@ -307,17 +294,14 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 		return nil, err
 	}
 
-	// Copy headers and set API key
 	req.Header = r.Header.Clone()
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 
-	// 检查是否需要流式响应
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
-	// Make the request
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -548,16 +532,14 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 获取模型和提供商信息
-	actualModelName, provider, err := h.getModelAndProvider(modelName)
+	config, err := h.getModelConfig(modelName)
 	if err != nil {
-		log.Error("Model or provider not found: " + modelName)
+		log.Error("Model config not found: " + modelName)
 		http.Error(w, "Model not found: "+modelName, http.StatusNotFound)
 		return
 	}
 
-	// 发送请求到提供商API
-	resp, err := h.sendProviderRequest(r, requestBody, actualModelName, provider, isStream)
+	resp, err := h.sendProviderRequest(r, requestBody, config, isStream)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -586,14 +568,12 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 }
 
 func gzipDecode(input []byte) ([]byte, error) {
-	// 创建gzip.Reader
 	reader, err := gzip.NewReader(bytes.NewReader(input))
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
 
-	// 读取解码后的数据
 	var buffer bytes.Buffer
 	_, err = io.Copy(&buffer, reader)
 	if err != nil {
@@ -601,4 +581,47 @@ func gzipDecode(input []byte) ([]byte, error) {
 	}
 
 	return buffer.Bytes(), nil
+}
+
+type Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type ModelsResponse struct {
+	Object string  `json:"object"`
+	Data   []Model `json:"data"`
+}
+
+func (h *ChatHandler) ListModels(w http.ResponseWriter, r *http.Request) {
+	if h.handleCORS(w, r) {
+		return
+	}
+
+	var configs []models.ModelConfig
+	if err := h.DB.Where("enabled = ?", true).Find(&configs).Error; err != nil {
+		http.Error(w, "Failed to get models", http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now().Unix()
+	modelsList := make([]Model, len(configs))
+	for i, c := range configs {
+		modelsList[i] = Model{
+			ID:      c.Name,
+			Object:  "model",
+			Created: now,
+			OwnedBy: "system",
+		}
+	}
+
+	response := ModelsResponse{
+		Object: "list",
+		Data:   modelsList,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }

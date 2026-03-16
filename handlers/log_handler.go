@@ -144,7 +144,6 @@ type ReplayResponse struct {
 	ModifiedRequest  string      `json:"modifiedRequest"`
 	OriginalResponse string      `json:"originalResponse"`
 	NewResponse      string      `json:"newResponse"`
-	ProviderID       string      `json:"providerId"`
 	ModelName        string      `json:"modelName"`
 	ActualModelName  string      `json:"actualModelName"`
 	ResponseTime     int64       `json:"responseTime"`
@@ -191,26 +190,20 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		modifiedRequest["model"] = modelName
 	}
 
-	var mapping models.ModelMapping
-	if err := h.DB.Where("alias = ?", modelName).First(&mapping).Error; err != nil {
-		http.Error(w, "Model mapping not found: "+modelName, http.StatusNotFound)
+	var config models.ModelConfig
+	if err := h.DB.Where("name = ?", modelName).First(&config).Error; err != nil {
+		http.Error(w, "Model config not found: "+modelName, http.StatusNotFound)
 		return
 	}
 
-	var provider models.Provider
-	if err := h.DB.First(&provider, mapping.ProviderID).Error; err != nil {
-		http.Error(w, "Provider not found", http.StatusNotFound)
-		return
-	}
-
-	modifiedRequest["model"] = mapping.ModelName
+	modifiedRequest["model"] = config.ModelName
 	updatedBody, err := json.Marshal(modifiedRequest)
 	if err != nil {
 		http.Error(w, "Failed to marshal modified request", http.StatusInternalServerError)
 		return
 	}
 
-	providerURL := provider.BaseURL
+	providerURL := config.APIBaseURL
 	if !strings.HasSuffix(providerURL, "/") {
 		providerURL += "/"
 	}
@@ -223,7 +216,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 
 	isStream := false
 	if streamValue, ok := modifiedRequest["stream"].(bool); ok && streamValue {
@@ -241,9 +234,8 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 			ModifiedRequest:  string(updatedBody),
 			OriginalResponse: reqLog.Response,
 			Error:            err.Error(),
-			ProviderID:       provider.ID,
 			ModelName:        modelName,
-			ActualModelName:  mapping.ModelName,
+			ActualModelName:  config.ModelName,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
@@ -270,9 +262,8 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		ModifiedRequest:  string(updatedBody),
 		OriginalResponse: reqLog.Response,
 		NewResponse:      newResponse,
-		ProviderID:       provider.ID,
 		ModelName:        modelName,
-		ActualModelName:  mapping.ModelName,
+		ActualModelName:  config.ModelName,
 		ResponseTime:     responseTime,
 	}
 

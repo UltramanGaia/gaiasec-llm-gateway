@@ -60,8 +60,7 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 	}
 
 	err = db.AutoMigrate(
-		&models.Provider{},
-		&models.ModelMapping{},
+		&models.ModelConfig{},
 		&models.RequestLog{},
 	)
 	if err != nil {
@@ -102,8 +101,7 @@ func main() {
 	}
 
 	chatHandler := handlers.NewChatHandler(db)
-	providerHandler := handlers.NewProviderHandler(db)
-	modelMappingHandler := handlers.NewModelMappingHandler(db)
+	modelConfigHandler := handlers.NewModelConfigHandler(db)
 	logHandler := handlers.NewLogHandler(db)
 	statsHandler := handlers.NewStatsHandler(db)
 
@@ -111,32 +109,13 @@ func main() {
 
 	mux.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
 	mux.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
-
-	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			providerHandler.GetProviders(w, r)
-		} else if r.Method == "POST" {
-			providerHandler.CreateProvider(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	mux.HandleFunc("/api/providers/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			providerHandler.GetProvider(w, r)
-		} else if r.Method == "POST" {
-			providerHandler.ModifyProvider(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
+	mux.HandleFunc("/v1/models", chatHandler.ListModels)
 
 	mux.HandleFunc("/api/model-mappings/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
-			modelMappingHandler.GetModelMapping(w, r)
+			modelConfigHandler.GetModelConfig(w, r)
 		} else if r.Method == "POST" {
-			modelMappingHandler.ModifyModelMapping(w, r)
+			modelConfigHandler.ModifyModelConfig(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -144,9 +123,9 @@ func main() {
 
 	mux.HandleFunc("/api/model-mappings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
-			modelMappingHandler.GetModelMappings(w, r)
+			modelConfigHandler.GetModelConfigs(w, r)
 		} else if r.Method == "POST" {
-			modelMappingHandler.CreateModelMapping(w, r)
+			modelConfigHandler.CreateModelConfig(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}

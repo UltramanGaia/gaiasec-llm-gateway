@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	log "github.com/sirupsen/logrus"
 	"net/http"
 	"time"
 
@@ -10,81 +9,86 @@ import (
 	"llm-gateway/models"
 )
 
-// ModelMappingHandler 处理ModelMapping相关的API请求
-type ModelMappingHandler struct {
+type ModelConfigHandler struct {
 	DB *gorm.DB
 }
 
-// NewModelMappingHandler 创建ModelMappingHandler的新实例
-func NewModelMappingHandler(db *gorm.DB) *ModelMappingHandler {
-	return &ModelMappingHandler{
+func NewModelConfigHandler(db *gorm.DB) *ModelConfigHandler {
+	return &ModelConfigHandler{
 		DB: db,
 	}
 }
 
-// CreateModelMapping 创建新的ModelMapping
-func (h *ModelMappingHandler) CreateModelMapping(w http.ResponseWriter, r *http.Request) {
-	var mapping models.ModelMapping
-	if err := json.NewDecoder(r.Body).Decode(&mapping); err != nil {
-		log.Errorf("Error decoding request body: %v", err)
+func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Request) {
+	var config models.ModelConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if err := h.DB.Create(&mapping).Error; err != nil {
+	config.CreatedAt = time.Now()
+	config.UpdatedAt = time.Now()
+
+	if err := h.DB.Create(&config).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(mapping)
+	json.NewEncoder(w).Encode(config)
 }
 
-// GetModelMappings 获取所有ModelMapping列表
-func (h *ModelMappingHandler) GetModelMappings(w http.ResponseWriter, r *http.Request) {
-	var mappings []models.ModelMapping
-	if err := h.DB.Find(&mappings).Error; err != nil {
+func (h *ModelConfigHandler) GetModelConfigs(w http.ResponseWriter, r *http.Request) {
+	var configs []models.ModelConfig
+	if err := h.DB.Find(&configs).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mappings)
+	json.NewEncoder(w).Encode(configs)
 }
 
-func (h *ModelMappingHandler) GetModelMapping(w http.ResponseWriter, r *http.Request) {
+func (h *ModelConfigHandler) GetModelConfig(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/model-mappings/"):]
-	var mappings []models.ModelMapping
-	if err := h.DB.First(&mappings, id).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var config models.ModelConfig
+	if err := h.DB.First(&config, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mappings)
+	json.NewEncoder(w).Encode(config)
 }
 
-func (h *ModelMappingHandler) ModifyModelMapping(w http.ResponseWriter, r *http.Request) {
+func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/model-mappings/"):]
-	var mapping models.ModelMapping
-	if err := h.DB.First(&mapping, id).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+
+	var config models.ModelConfig
+	if err := h.DB.First(&config, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	var mappingInput models.ModelMapping
-	if err := json.NewDecoder(r.Body).Decode(&mappingInput); err != nil {
-		log.Errorf("Error decoding request body: %v", err)
+	var input models.ModelConfig
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	mapping.Alias = mappingInput.Alias
-	mapping.ModelName = mappingInput.ModelName
-	mapping.UpdatedAt = time.Now()
-	if err := h.DB.Save(&mapping).Error; err != nil {
+	config.Name = input.Name
+	config.ModelName = input.ModelName
+	config.APIBaseURL = input.APIBaseURL
+	config.APIKey = input.APIKey
+	config.MaxTokens = input.MaxTokens
+	config.Temperature = input.Temperature
+	config.Description = input.Description
+	config.Enabled = input.Enabled
+	config.UpdatedAt = time.Now()
+
+	if err := h.DB.Save(&config).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mapping)
+	json.NewEncoder(w).Encode(config)
 }
