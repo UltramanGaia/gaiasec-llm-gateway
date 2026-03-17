@@ -59,6 +59,15 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+
 	err = db.AutoMigrate(
 		&models.ModelConfig{},
 		&models.RequestLog{},
@@ -204,7 +213,12 @@ func main() {
 
 	address := fmt.Sprintf("%s:%d", listenHost, listenPort)
 	log.Printf("Server starting on %s\n", address)
-	if err := http.ListenAndServe(address, accessLogMiddleware(mux)); err != nil {
+
+	rateLimiter := NewRateLimiter(100, time.Minute)
+
+	handler := rateLimitMiddleware(rateLimiter, accessLogMiddleware(mux))
+
+	if err := http.ListenAndServe(address, handler); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}
 }

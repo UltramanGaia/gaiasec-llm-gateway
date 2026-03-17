@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -274,7 +273,6 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 // processStreamResponse 处理流式响应，拼接成完整的非流式格式
 func (h *LogHandler) processStreamResponse(resp *http.Response) string {
 	var fullResponse strings.Builder
-	var mu sync.Mutex
 	var contentOnly strings.Builder
 	var reasoningContentOnly strings.Builder
 
@@ -318,9 +316,7 @@ func (h *LogHandler) processStreamResponse(resp *http.Response) string {
 			break
 		}
 
-		mu.Lock()
 		fullResponse.WriteString(line)
-		mu.Unlock()
 
 		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
 			jsonStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
@@ -335,14 +331,10 @@ func (h *LogHandler) processStreamResponse(resp *http.Response) string {
 					}
 					if len(streamResponse.Choices) > 0 {
 						if streamResponse.Choices[0].Delta.Content != "" {
-							mu.Lock()
 							contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
-							mu.Unlock()
 						}
 						if streamResponse.Choices[0].Delta.ReasoningContent != "" {
-							mu.Lock()
 							reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
-							mu.Unlock()
 						}
 					}
 				}
