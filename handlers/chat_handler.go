@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -62,30 +61,37 @@ func (h *ChatHandler) handleCORS(w http.ResponseWriter, r *http.Request) bool {
 
 // parseRequest 解析请求体，获取模型名称和流式标志
 func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]interface{}, string, string, bool, error) {
-	// Log the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.WithError(err).Error("Failed to read request body")
 		return nil, nil, "", "", false, err
 	}
+	log.WithField("body_length", len(body)).Debug("Request body read successfully")
 
-	// Parse request to get model name
 	var requestBody map[string]interface{}
 	if err := json.Unmarshal(body, &requestBody); err != nil {
+		log.WithError(err).WithField("body", string(body)).Error("Failed to parse request body as JSON")
 		return nil, nil, "", "", false, err
 	}
 
 	modelName, ok := requestBody["model"].(string)
 	if !ok || modelName == "" {
+		log.Error("Model name is missing in request")
 		return nil, nil, "", "", false, errors.New("Model name is required")
 	}
 
 	userToken := r.Header.Get("Authorization")
 
-	// 检查是否需要流式响应
 	isStream := false
 	if streamValue, ok := requestBody["stream"].(bool); ok && streamValue {
 		isStream = true
 	}
+
+	log.WithFields(log.Fields{
+		"model":     modelName,
+		"is_stream": isStream,
+		"has_token": userToken != "",
+	}).Info("Request parsed successfully")
 
 	return body, requestBody, modelName, userToken, isStream, nil
 }
@@ -99,10 +105,19 @@ func calculateFingerprint(request, modelName, userToken string) string {
 // handleCache 检查缓存，如果命中则返回响应并返回true，否则返回false
 func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName, userToken string, isStream bool) bool {
 	fingerprint := calculateFingerprint(string(body), modelName, userToken)
+	log.WithField("fingerprint", fingerprint).Debug("Checking cache for request")
+
 	var existingLog models.RequestLog
 	if err := h.DB.Where("fingerprint = ?", fingerprint).First(&existingLog).Error; err != nil {
+		log.WithField("fingerprint", fingerprint).Info("Cache miss, will forward request to provider")
 		return false
 	}
+
+	log.WithFields(log.Fields{
+		"fingerprint": fingerprint,
+		"is_stream":   isStream,
+		"model":       modelName,
+	}).Info("Cache hit, returning cached response")
 
 	// 找到缓存，根据请求类型返回响应
 	if isStream {
@@ -263,10 +278,20 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 
 // getModelConfig 获取模型配置信息
 func (h *ChatHandler) getModelConfig(modelName string) (models.ModelConfig, error) {
+	log.WithField("model", modelName).Debug("Looking up model config")
+
 	var config models.ModelConfig
 	if err := h.DB.Where("name = ? AND enabled = ?", modelName, true).First(&config).Error; err != nil {
+		log.WithError(err).WithField("model", modelName).Error("Model config not found or disabled")
 		return models.ModelConfig{}, err
 	}
+
+	log.WithFields(log.Fields{
+		"model":      modelName,
+		"api_base":   config.APIBaseURL,
+		"model_name": config.ModelName,
+	}).Debug("Model config found")
+
 	return config, nil
 }
 
@@ -275,6 +300,7 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 	requestBody["model"] = config.ModelName
 	updatedBody, err := json.Marshal(requestBody)
 	if err != nil {
+		log.WithError(err).Error("Failed to marshal request body for provider")
 		return nil, err
 	}
 
@@ -289,8 +315,16 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 	}
 	providerURL += "chat/completions"
 
+	log.WithFields(log.Fields{
+		"url":         providerURL,
+		"model":       config.ModelName,
+		"is_stream":   isStream,
+		"body_length": len(updatedBody),
+	}).Info("Sending request to LLM provider")
+
 	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(updatedBody))
 	if err != nil {
+		log.WithError(err).WithField("url", providerURL).Error("Failed to create HTTP request for provider")
 		return nil, err
 	}
 
@@ -302,24 +336,33 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 		req.Header.Set("Accept", "text/event-stream")
 	}
 
+	startTime := time.Now()
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
+		log.WithError(err).WithField("url", providerURL).Error("Failed to send request to provider")
 		return nil, err
 	}
+
+	elapsed := time.Since(startTime)
+	log.WithFields(log.Fields{
+		"url":           providerURL,
+		"status_code":   resp.StatusCode,
+		"response_time": elapsed.Milliseconds(),
+	}).Info("Received response from LLM provider")
 
 	return resp, nil
 }
 
 // handleStreamResponse 处理流式响应
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
-	// 用于组合流式响应内容
-	var fullResponse strings.Builder
-	var mu sync.Mutex                        // 保护并发访问
-	var contentOnly strings.Builder          // 仅用于拼接content内容
-	var reasoningContentOnly strings.Builder // 仅用于拼接reasoning_content内容
+	log.Info("Starting stream response handling")
 
-	// 定义响应结构体
+	var fullResponse strings.Builder
+	var mu sync.Mutex
+	var contentOnly strings.Builder
+	var reasoningContentOnly strings.Builder
+
 	var streamResponse struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -346,41 +389,35 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 		}
 	}
 
-	// 用于保存第一个事件的元数据
 	var firstID, firstObject, firstModel string
 	var firstCreated int64
 	var hasMetadata bool
 
-	// 流式处理响应
+	chunkCount := 0
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.Error("Error reading stream: " + err.Error())
+				log.WithError(err).Error("Error reading stream")
 			}
 			break
 		}
 
-		// 写入客户端
+		chunkCount++
 		w.Write([]byte(line))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
 
-		// 组合完整响应内容用于日志
 		mu.Lock()
 		fullResponse.WriteString(line)
 		mu.Unlock()
 
-		// 解析JSON并提取content内容
 		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
-			// 去掉"data: "前缀
 			jsonStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
 			if jsonStr != "" && jsonStr != "[DONE]" {
-				// 解析JSON
 				if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err == nil {
-					// 保存第一个事件的元数据
 					if !hasMetadata && streamResponse.ID != "" {
 						firstID = streamResponse.ID
 						firstObject = streamResponse.Object
@@ -388,14 +425,12 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 						firstModel = streamResponse.Model
 						hasMetadata = true
 					}
-					// 提取content内容
 					if len(streamResponse.Choices) > 0 {
 						if streamResponse.Choices[0].Delta.Content != "" {
 							mu.Lock()
 							contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
 							mu.Unlock()
 						}
-						// 提取reasoning_content内容
 						if streamResponse.Choices[0].Delta.ReasoningContent != "" {
 							mu.Lock()
 							reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
@@ -406,6 +441,12 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 			}
 		}
 	}
+
+	log.WithFields(log.Fields{
+		"chunks":           chunkCount,
+		"content_length":   contentOnly.Len(),
+		"reasoning_length": reasoningContentOnly.Len(),
+	}).Info("Stream response completed")
 
 	// 构建缓存响应（使用非流式格式，包含Message字段）
 	cachedResp := struct {
@@ -479,45 +520,53 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 
 // handleNonStreamResponse 处理非流式响应
 func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {
-	// 非流式响应，保持原有处理方式
+	log.Info("Starting non-stream response handling")
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.WithError(err).Error("Failed to read response body from provider")
 		return err
 	}
 
+	log.WithField("response_length", len(respBody)).Debug("Response body read from provider")
+
 	respBodyDecode, err := gzipDecode(respBody)
 	if err != nil {
-		// Log the response
 		reqLog.Response = string(respBody)
+		log.Debug("Response is not gzip encoded")
 	} else {
 		reqLog.Response = string(respBodyDecode)
+		log.Debug("Response was gzip decoded")
 	}
 
-	// Write response body
 	w.Write(respBody)
+
+	log.WithField("response_length", len(respBody)).Info("Non-stream response completed")
 	return nil
 }
 
 // ChatCompletion 处理聊天完成请求，根据模型名称路由到对应的LLM提供商
 func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
-	// 处理CORS
+	startTime := time.Now()
+	log.WithField("remote_addr", r.RemoteAddr).Info("New chat completion request received")
+
 	if h.handleCORS(w, r) {
+		log.Debug("CORS preflight request handled")
 		return
 	}
 
 	body, requestBody, modelName, userToken, isStream, err := h.parseRequest(r)
 	if err != nil {
+		log.WithError(err).Error("Failed to parse request")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	fmt.Println(string(body))
 
-	// 检查缓存
 	if h.handleCache(w, body, modelName, userToken, isStream) {
+		log.WithField("elapsed", time.Since(startTime).Milliseconds()).Info("Request served from cache")
 		return
 	}
 
-	// 创建请求日志条目（仅当缓存未命中时）
 	fingerprint := calculateFingerprint(string(body), modelName, userToken)
 	reqLog := models.RequestLog{
 		UserToken:   userToken,
@@ -528,43 +577,50 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() {
 		if err := h.DB.Create(&reqLog).Error; err != nil {
-			log.Error("Failed to save request log: " + err.Error())
+			log.WithError(err).Error("Failed to save request log")
+		} else {
+			log.Debug("Request log saved successfully")
 		}
 	}()
 
 	config, err := h.getModelConfig(modelName)
 	if err != nil {
-		log.Error("Model config not found: " + modelName)
+		log.WithError(err).WithField("model", modelName).Error("Model config not found")
 		http.Error(w, "Model not found: "+modelName, http.StatusNotFound)
 		return
 	}
 
 	resp, err := h.sendProviderRequest(r, requestBody, config, isStream)
 	if err != nil {
+		log.WithError(err).Error("Failed to send request to provider")
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
 
-	// Set response status code
 	w.WriteHeader(resp.StatusCode)
 
-	// 处理响应
 	if isStream {
 		h.handleStreamResponse(w, resp, &reqLog)
 	} else {
 		if err := h.handleNonStreamResponse(w, resp, &reqLog); err != nil {
+			log.WithError(err).Error("Failed to handle non-stream response")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
+
+	log.WithFields(log.Fields{
+		"model":      modelName,
+		"is_stream":  isStream,
+		"elapsed_ms": time.Since(startTime).Milliseconds(),
+	}).Info("Chat completion request completed")
 }
 
 func gzipDecode(input []byte) ([]byte, error) {
