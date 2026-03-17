@@ -509,11 +509,6 @@ onUnmounted(() => {
                 />
               </div>
             </el-tab-pane>
-            <el-tab-pane v-if="currentLog.streamResponse" label="Stream Response" name="stream">
-              <div class="tab-content">
-                <ResponseViewer :data="parseJson(currentLog.streamResponse)" />
-              </div>
-            </el-tab-pane>
           </el-tabs>
         </template>
 
