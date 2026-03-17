@@ -30,7 +30,7 @@ func LoadConfig() *Config {
 		CleanupInterval: getEnvAsDuration("CLEANUP_INTERVAL", 1*time.Hour),
 		ServerHost:      getEnv("SERVER_HOST", "0.0.0.0"),
 		ServerPort:      getEnvAsInt("SERVER_PORT", 8090),
-		DBHost:          getEnv("DB_HOST", "localhost"),
+		DBHost:          getEnv("DB_HOST", "mysql.sothoth.svc.cluster.local"),
 		DBPort:          getEnvAsInt("DB_PORT", 3306),
 		DBUser:          getEnv("DB_USER", "sa"),
 		DBPassword:      getEnv("DB_PASSWORD", "qq123456"),

@@ -278,7 +278,7 @@ func (h *ChatHandler) handleCache(w http.ResponseWriter, body []byte, modelName,
 
 // getModelConfig 获取模型配置信息
 func (h *ChatHandler) getModelConfig(modelName string) (models.ModelConfig, error) {
-	log.WithField("model", modelName).Debug("Looking up model config")
+	log.WithField("model", modelName).Info("Looking up model config")
 
 	var config models.ModelConfig
 	if err := h.DB.Where("name = ? AND enabled = ?", modelName, true).First(&config).Error; err != nil {
@@ -290,7 +290,7 @@ func (h *ChatHandler) getModelConfig(modelName string) (models.ModelConfig, erro
 		"model":      modelName,
 		"api_base":   config.APIBaseURL,
 		"model_name": config.ModelName,
-	}).Debug("Model config found")
+	}).Info("Model config found")
 
 	return config, nil
 }
