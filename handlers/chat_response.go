@@ -102,6 +102,11 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 		"reasoning_length": reasoningContentOnly.Len(),
 	}).Info("Stream response completed")
 
+	if contentOnly.Len() == 0 && reasoningContentOnly.Len() == 0 {
+		log.Warn("Stream response has no content, skipping log")
+		return
+	}
+
 	cachedResp := struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -194,6 +199,11 @@ func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.
 	}
 
 	log.WithField("response_length", len(respBody)).Debug("Response body read from provider")
+
+	if len(respBody) == 0 {
+		log.Warn("Non-stream response is empty, skipping log")
+		return nil
+	}
 
 	respBodyDecode, err := gzipDecode(respBody)
 	if err != nil {

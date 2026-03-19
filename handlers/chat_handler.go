@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
 	"time"
 
@@ -50,9 +51,12 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		Request:     string(body),
 		Fingerprint: fingerprint,
 	}
+	shouldLog := false
 	defer func() {
 		reqLog.ResponseTime = time.Since(startTime).Milliseconds()
-		h.asyncLogWriter.Write(&reqLog)
+		if shouldLog && reqLog.Response != "" {
+			h.asyncLogWriter.Write(&reqLog)
+		}
 	}()
 
 	config, err := h.getModelConfig(modelName)
@@ -70,6 +74,19 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.WithField("status_code", resp.StatusCode).Warn("Provider returned non-2xx status code, skipping log")
+		for key, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		w.Write(respBody)
+		return
+	}
+
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -86,6 +103,10 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+
+	if reqLog.Response != "" {
+		shouldLog = true
 	}
 
 	log.WithFields(log.Fields{
