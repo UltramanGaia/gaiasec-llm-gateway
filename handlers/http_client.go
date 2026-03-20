@@ -17,7 +17,7 @@ var (
 func GetHTTPClient() *http.Client {
 	httpClientOnce.Do(func() {
 		httpClient = &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: 300 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
@@ -33,15 +33,15 @@ func GetStreamHTTPClient() *http.Client {
 	streamClientOnce.Do(func() {
 		streamHttpClient = &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   20,
-				IdleConnTimeout:       90 * time.Second,
-				DisableCompression:    false,
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+				DisableCompression:  false,
 				DialContext: (&net.Dialer{
 					Timeout:   30 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				ResponseHeaderTimeout: 60 * time.Second,
+				ResponseHeaderTimeout: 300 * time.Second,
 			},
 		}
 	})
