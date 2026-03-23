@@ -21,7 +21,7 @@ func GetHTTPClient() *http.Client {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
+				IdleConnTimeout:     300 * time.Second,
 				DisableCompression:  false,
 			},
 		}
@@ -35,13 +35,13 @@ func GetStreamHTTPClient() *http.Client {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
+				IdleConnTimeout:     300 * time.Second,
 				DisableCompression:  false,
 				DialContext: (&net.Dialer{
-					Timeout:   30 * time.Second,
-					KeepAlive: 30 * time.Second,
+					Timeout:   300 * time.Second,
+					KeepAlive: 300 * time.Second,
 				}).DialContext,
-				ResponseHeaderTimeout: 300 * time.Second,
+				ResponseHeaderTimeout: 3000 * time.Second,
 			},
 		}
 	})
