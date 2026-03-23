@@ -473,7 +473,6 @@ onUnmounted(() => {
         <div class="log-header">
           <div class="log-item"><strong>ID:</strong> {{ currentLog.id }}</div>
           <div class="log-item"><strong>Model:</strong> {{ currentLog.modelName }}</div>
-          <div class="log-item"><strong>User Token:</strong> {{ currentLog.userToken }}</div>
           <div class="log-item"><strong>Created At:</strong> {{ formatDateTime(currentLog.createdAt) }}</div>
           <div class="log-item" v-if="currentLog.responseTime">
             <strong>Response Time:</strong> 
