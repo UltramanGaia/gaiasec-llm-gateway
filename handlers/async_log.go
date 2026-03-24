@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"sync"
-	"time"
 
 	"llm-gateway/models"
 
@@ -42,43 +41,23 @@ func (w *AsyncLogWriter) start() {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
-		batch := make([]*models.RequestLog, 0, 100)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
 
 		for {
 			select {
 			case req := <-w.logChan:
 				if req != nil && req.Log != nil {
-					batch = append(batch, req.Log)
-					if len(batch) >= 100 {
-						w.writeBatch(batch)
-						batch = batch[:0]
-					}
-				}
-			case <-ticker.C:
-				if len(batch) > 0 {
-					w.writeBatch(batch)
-					batch = batch[:0]
+					w.writeSingle(req.Log)
 				}
 			case <-w.stopChan:
-				if len(batch) > 0 {
-					w.writeBatch(batch)
-				}
 				return
 			}
 		}
 	}()
 }
 
-func (w *AsyncLogWriter) writeBatch(logs []*models.RequestLog) {
-	if len(logs) == 0 {
-		return
-	}
-	if err := w.db.CreateInBatches(logs, 100).Error; err != nil {
-		log.WithError(err).Error("Failed to write batch logs")
-	} else {
-		log.WithField("count", len(logs)).Debug("Batch logs written successfully")
+func (w *AsyncLogWriter) writeSingle(reqLog *models.RequestLog) {
+	if err := w.db.Create(reqLog).Error; err != nil {
+		log.WithError(err).Error("Failed to write log")
 	}
 }
 

@@ -120,7 +120,7 @@ func (h *SessionHandler) UploadSession(w http.ResponseWriter, r *http.Request) {
 
 	record := models.Session{
 		SessionID:   body.SessionID,
-		Events:      body.Events,
+		Events:      models.JSONSlice(body.Events.([]interface{})),
 		FinalOutput: body.FinalOutput,
 	}
 

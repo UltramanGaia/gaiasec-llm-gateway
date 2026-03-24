@@ -30,13 +30,34 @@ func (j *JSONMap) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, j)
 }
 
+type JSONSlice []interface{}
+
+func (js JSONSlice) Value() (driver.Value, error) {
+	if js == nil {
+		return nil, nil
+	}
+	return json.Marshal(js)
+}
+
+func (js *JSONSlice) Scan(value interface{}) error {
+	if value == nil {
+		*js = nil
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New("type assertion to []byte failed")
+	}
+	return json.Unmarshal(bytes, js)
+}
+
 type Session struct {
-	ID          uint        `gorm:"primarykey;autoIncrement" json:"id"`
-	CreatedAt   time.Time   `gorm:"index" json:"createdAt"`
-	UpdatedAt   time.Time   `json:"updatedAt"`
-	SessionID   string      `gorm:"uniqueIndex;type:varchar(36)" json:"sessionId"`
-	Events      interface{} `gorm:"type:longtext" json:"events"`
-	FinalOutput JSONMap     `gorm:"type:longtext" json:"finalOutput"`
+	ID          uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt   time.Time `gorm:"index" json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	SessionID   string    `gorm:"uniqueIndex;type:varchar(36)" json:"sessionId"`
+	Events      JSONSlice `gorm:"type:longtext" json:"events"`
+	FinalOutput JSONMap   `gorm:"type:longtext" json:"finalOutput"`
 }
 
 func (s *Session) BeforeCreate(tx *gorm.DB) error {
