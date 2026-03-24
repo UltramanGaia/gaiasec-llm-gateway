@@ -14,27 +14,29 @@ type Config struct {
 	ServerHost string
 	ServerPort int
 
-	DBHost     string
-	DBPort     int
-	DBUser     string
-	DBPassword string
-	DBName     string
+	DBHost           string
+	DBPort           int
+	DBUser           string
+	DBPassword       string
+	DBName           string
+	SessionServerKey string
 }
 
 var AppConfig *Config
 
 func LoadConfig() *Config {
 	cfg := &Config{
-		LogMaxCount:     getEnvAsInt64("LOG_MAX_COUNT", 100000),
-		LogKeepCount:    getEnvAsInt64("LOG_KEEP_COUNT", 50000),
-		CleanupInterval: getEnvAsDuration("CLEANUP_INTERVAL", 1*time.Hour),
-		ServerHost:      getEnv("SERVER_HOST", "0.0.0.0"),
-		ServerPort:      getEnvAsInt("SERVER_PORT", 8090),
-		DBHost:          getEnv("DB_HOST", "mysql.sothoth.svc.cluster.local"),
-		DBPort:          getEnvAsInt("DB_PORT", 3306),
-		DBUser:          getEnv("DB_USER", "sa"),
-		DBPassword:      getEnv("DB_PASSWORD", "qq123456"),
-		DBName:          getEnv("DB_NAME", "gaiasec"),
+		LogMaxCount:      getEnvAsInt64("LOG_MAX_COUNT", 100000),
+		LogKeepCount:     getEnvAsInt64("LOG_KEEP_COUNT", 50000),
+		CleanupInterval:  getEnvAsDuration("CLEANUP_INTERVAL", 1*time.Hour),
+		ServerHost:       getEnv("SERVER_HOST", "0.0.0.0"),
+		ServerPort:       getEnvAsInt("SERVER_PORT", 8090),
+		DBHost:           getEnv("DB_HOST", "mysql.sothoth.svc.cluster.local"),
+		DBPort:           getEnvAsInt("DB_PORT", 3306),
+		DBUser:           getEnv("DB_USER", "sa"),
+		DBPassword:       getEnv("DB_PASSWORD", "qq123456"),
+		DBName:           getEnv("DB_NAME", "gaiasec"),
+		SessionServerKey: getEnv("SESSION_SERVER_KEY", ""),
 	}
 
 	AppConfig = cfg

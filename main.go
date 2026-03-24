@@ -71,6 +71,7 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 	err = db.AutoMigrate(
 		&models.ModelConfig{},
 		&models.RequestLog{},
+		&models.Session{},
 	)
 	if err != nil {
 		return nil, err
@@ -115,6 +116,8 @@ func main() {
 	statsHandler := handlers.NewStatsHandler(db)
 
 	mux := http.NewServeMux()
+
+	handlers.RegisterSessionRoutes(mux, db)
 
 	mux.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
 	mux.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
