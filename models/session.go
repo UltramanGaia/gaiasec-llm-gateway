@@ -9,27 +9,6 @@ import (
 	"gorm.io/gorm"
 )
 
-type JSONMap map[string]interface{}
-
-func (j JSONMap) Value() (driver.Value, error) {
-	if j == nil {
-		return nil, nil
-	}
-	return json.Marshal(j)
-}
-
-func (j *JSONMap) Scan(value interface{}) error {
-	if value == nil {
-		*j = nil
-		return nil
-	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
-	}
-	return json.Unmarshal(bytes, j)
-}
-
 type JSONSlice []interface{}
 
 func (js JSONSlice) Value() (driver.Value, error) {
@@ -52,12 +31,14 @@ func (js *JSONSlice) Scan(value interface{}) error {
 }
 
 type Session struct {
-	ID          uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	CreatedAt   time.Time `gorm:"index" json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	SessionID   string    `gorm:"uniqueIndex;type:varchar(36)" json:"sessionId"`
-	Events      JSONSlice `gorm:"type:longtext" json:"events"`
-	FinalOutput JSONMap   `gorm:"type:longtext" json:"finalOutput"`
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time `gorm:"index" json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	ProjectID string    `gorm:"type:varchar(64)" json:"projectId"`
+	AgentID   string    `gorm:"type:varchar(36)" json:"agentId"`
+	Engine    string    `gorm:"type:varchar(128)" json:"engine"`
+	SessionID string    `gorm:"uniqueIndex;type:varchar(64)" json:"sessionId"`
+	Events    JSONSlice `gorm:"type:longtext" json:"events"`
 }
 
 func (s *Session) BeforeCreate(tx *gorm.DB) error {

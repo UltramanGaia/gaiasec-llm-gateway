@@ -21,9 +21,30 @@ func NewSessionHandler(db *gorm.DB) *SessionHandler {
 }
 
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var sessionIDRegex = regexp.MustCompile(`^.{1,64}$`)
+var projectIDRegex = regexp.MustCompile(`^.{1,64}$`)
+var engineRegex = regexp.MustCompile(`^.{1,128}$`)
 
 func isValidUUID(text string) bool {
 	return uuidRegex.MatchString(text)
+}
+
+func isValidSessionID(text string) bool {
+	return sessionIDRegex.MatchString(text)
+}
+
+func isValidProjectID(text string) bool {
+	if text == "" {
+		return true
+	}
+	return projectIDRegex.MatchString(text)
+}
+
+func isValidEngine(text string) bool {
+	if text == "" {
+		return true
+	}
+	return engineRegex.MatchString(text)
 }
 
 func (h *SessionHandler) auth(w http.ResponseWriter, r *http.Request) bool {
@@ -42,9 +63,11 @@ func (h *SessionHandler) auth(w http.ResponseWriter, r *http.Request) bool {
 }
 
 type sessionPayload struct {
-	SessionID   string                 `json:"session_id"`
-	Events      interface{}            `json:"events"`
-	FinalOutput map[string]interface{} `json:"final_output"`
+	ProjectID string      `json:"project_id"`
+	AgentID   string      `json:"agent_id"`
+	Engine    string      `json:"engine"`
+	SessionID string      `json:"session_id"`
+	Events    interface{} `json:"events"`
 }
 
 func (h *SessionHandler) validateSessionPayload(pathSessionID string, body *sessionPayload) error {
@@ -60,7 +83,15 @@ func (h *SessionHandler) validateSessionPayload(pathSessionID string, body *sess
 		return errors.New("session_id mismatch")
 	}
 
-	if !isValidUUID(body.SessionID) {
+	if !isValidProjectID(body.ProjectID) {
+		return errors.New("invalid project_id")
+	}
+
+	if !isValidEngine(body.Engine) {
+		return errors.New("invalid engine")
+	}
+
+	if !isValidSessionID(body.SessionID) {
 		return errors.New("invalid session_id")
 	}
 
@@ -75,19 +106,6 @@ func (h *SessionHandler) validateSessionPayload(pathSessionID string, body *sess
 		}
 	}
 
-	if body.FinalOutput != nil {
-		if fsID, ok := body.FinalOutput["session_id"].(string); !ok || fsID != body.SessionID {
-			return errors.New("final_output.session_id mismatch")
-		}
-		agentID, ok := body.FinalOutput["agent_id"].(string)
-		if !ok || !isValidUUID(agentID) {
-			return errors.New("invalid final_output.agent_id")
-		}
-		if _, ok := body.FinalOutput["content"].(string); !ok {
-			return errors.New("invalid final_output.content")
-		}
-	}
-
 	return nil
 }
 
@@ -97,7 +115,7 @@ func (h *SessionHandler) UploadSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := extractSessionID(r.URL.Path)
-	if sessionID == "" || !isValidUUID(sessionID) {
+	if sessionID == "" || !isValidSessionID(sessionID) {
 		http.Error(w, `{"error": "invalid session_id"}`, http.StatusBadRequest)
 		return
 	}
@@ -119,9 +137,11 @@ func (h *SessionHandler) UploadSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	record := models.Session{
-		SessionID:   body.SessionID,
-		Events:      models.JSONSlice(body.Events.([]interface{})),
-		FinalOutput: body.FinalOutput,
+		ProjectID: body.ProjectID,
+		AgentID:   body.AgentID,
+		Engine:    body.Engine,
+		SessionID: body.SessionID,
+		Events:    models.JSONSlice(body.Events.([]interface{})),
 	}
 
 	result := h.db.Save(&record)
@@ -133,6 +153,9 @@ func (h *SessionHandler) UploadSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"project_id": body.ProjectID,
+		"agent_id":   body.AgentID,
+		"engine":     body.Engine,
 		"ok":         true,
 		"session_id": sessionID,
 	})
@@ -144,7 +167,7 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := extractSessionID(r.URL.Path)
-	if sessionID == "" || !isValidUUID(sessionID) {
+	if sessionID == "" || !isValidSessionID(sessionID) {
 		http.Error(w, `{"error": "invalid session_id"}`, http.StatusBadRequest)
 		return
 	}
@@ -163,9 +186,11 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"session_id":   record.SessionID,
-		"events":       record.Events,
-		"final_output": record.FinalOutput,
+		"project_id": record.ProjectID,
+		"agent_id":   record.AgentID,
+		"engine":     record.Engine,
+		"session_id": record.SessionID,
+		"events":     record.Events,
 	})
 }
 
