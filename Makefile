@@ -1,6 +1,9 @@
+IMAGE_REPO ?= 172.31.30.52:5000/gaiasec-env
+IMAGE_TAG := llm-gateway
+
 all: build
 build:
 	CGO_ENABLED=0 GOOS=linux go build -o llm-gateway .
-	docker build -t ultramangaia/gaiasec-env:llm-gateway . -f Dockerfile_local
+	docker build -t $(IMAGE_REPO):$(IMAGE_TAG) . -f Dockerfile_local
 push:
-	docker push ultramangaia/gaiasec-env:llm-gateway
+	docker push $(IMAGE_REPO):$(IMAGE_TAG)
