@@ -1,4 +1,4 @@
-IMAGE_REPO ?= 172.31.30.52:5000/gaiasec-env
+IMAGE_REPO ?= 172.31.30.52:5000/ultramangaia/gaiasec-env
 IMAGE_TAG := llm-gateway
 
 all: build
