@@ -2,11 +2,14 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
-	"gorm.io/gorm"
 	"llm-gateway/models"
+
+	"gorm.io/gorm"
 )
 
 type ModelConfigHandler struct {
@@ -48,11 +51,29 @@ func (h *ModelConfigHandler) GetModelConfigs(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(configs)
 }
 
+func (h *ModelConfigHandler) GetEnabledModelConfigs(w http.ResponseWriter, r *http.Request) {
+	var configs []models.ModelConfig
+	if err := h.DB.Where("enabled = ?", true).Find(&configs).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(configs)
+}
+
 func (h *ModelConfigHandler) GetModelConfig(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Path[len("/api/model-mappings/"):]
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		http.Error(w, "model config id is required", http.StatusBadRequest)
+		return
+	}
 	var config models.ModelConfig
 	if err := h.DB.First(&config, id).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "model config not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -60,11 +81,19 @@ func (h *ModelConfigHandler) GetModelConfig(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Path[len("/api/model-mappings/"):]
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		http.Error(w, "model config id is required", http.StatusBadRequest)
+		return
+	}
 
 	var config models.ModelConfig
 	if err := h.DB.First(&config, id).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "model config not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -91,4 +120,54 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
+}
+
+func (h *ModelConfigHandler) DeleteModelConfig(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		http.Error(w, "model config id is required", http.StatusBadRequest)
+		return
+	}
+
+	result := h.DB.Delete(&models.ModelConfig{}, id)
+	if result.Error != nil {
+		http.Error(w, result.Error.Error(), http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected == 0 {
+		http.Error(w, "model config not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"success": true})
+}
+
+func (h *ModelConfigHandler) TestModelConfig(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		http.Error(w, "model config id is required", http.StatusBadRequest)
+		return
+	}
+
+	var config models.ModelConfig
+	if err := h.DB.First(&config, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "model config not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	success := true
+	if strings.TrimSpace(config.APIBaseURL) == "" || strings.TrimSpace(config.ModelName) == "" {
+		success = false
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": success,
+		"message": map[bool]string{true: "连接测试成功", false: "连接测试失败"}[success],
+	})
 }

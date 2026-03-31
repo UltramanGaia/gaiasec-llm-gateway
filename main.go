@@ -126,8 +126,10 @@ func main() {
 	mux.HandleFunc("/api/model-mappings/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			modelConfigHandler.GetModelConfig(w, r)
-		} else if r.Method == "POST" {
+		} else if r.Method == "POST" || r.Method == "PUT" {
 			modelConfigHandler.ModifyModelConfig(w, r)
+		} else if r.Method == "DELETE" {
+			modelConfigHandler.DeleteModelConfig(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -139,6 +141,46 @@ func main() {
 		} else if r.Method == "POST" {
 			modelConfigHandler.CreateModelConfig(w, r)
 		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/model-configs/enabled", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			modelConfigHandler.GetEnabledModelConfigs(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/model-configs/{id}/test", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			modelConfigHandler.TestModelConfig(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/model-configs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			modelConfigHandler.GetModelConfig(w, r)
+		case http.MethodPut:
+			modelConfigHandler.ModifyModelConfig(w, r)
+		case http.MethodDelete:
+			modelConfigHandler.DeleteModelConfig(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/model-configs", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			modelConfigHandler.GetModelConfigs(w, r)
+		case http.MethodPost:
+			modelConfigHandler.CreateModelConfig(w, r)
+		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
