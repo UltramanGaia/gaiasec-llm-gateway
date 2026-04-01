@@ -7,7 +7,5 @@
 .trae/
 
 build/bin
-node_modules
-frontend/dist
 
 llm-gateway

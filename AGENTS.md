@@ -8,7 +8,8 @@
 - `handlers/`
 - `models/`
 - `config/`
-- `frontend/`
+- `.github/workflows/build.yml`
+- `Dockerfile`
 
 ## 约束
 - 正式 AI 配置入口是 `/api/model-configs`。

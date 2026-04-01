@@ -1,14 +1,14 @@
 # LLM Gateway
 
 ## Overview
-LLM Gateway is a middleware service that aggregates multiple LLM API interfaces into a single OpenAI-compatible interface. In the current GaiaSec integration it provides model configuration, request routing, and request log querying for the Go control plane.
+LLM Gateway is a Go service that aggregates multiple LLM API interfaces into a single OpenAI-compatible interface. In GaiaSec it owns model configuration, request routing, and request log querying.
 
 ## Features
 1. **Unified Interface**: Provides an OpenAI-compatible API to access multiple LLM providers
 2. **Model Configuration**: Stores named model configs used by the OpenAI-compatible entrypoints
 3. **Request Routing**: Routes requests to the appropriate upstream model endpoint based on config name
 4. **Logging**: Records all requests and responses for auditing and analysis
-6. **Web Interface**: Provides a Vue-based web interface for configuration and monitoring
+5. **GaiaSec Control-Plane APIs**: Serves `/api/model-configs` and `/api/request-logs`
 
 ## Architecture
 ![LLM Gateway Architecture](https://i.imgur.com/placeholder.png)
@@ -19,23 +19,18 @@ LLM Gateway is a middleware service that aggregates multiple LLM API interfaces 
 - **Credential Manager**: Stores API credentials inside model configs
 - **Request/Response Handler**: Processes and transforms requests and responses
 - **Logger**: Records all requests and responses
-- **Web UI**: Vue-based interface for configuration and monitoring
 
 ## Technology Stack
 - **Backend**: Go
-- **Frontend**: Vue 3 + Vite
 - **Database**: MySQL
 - **ORM**: GORM
-- **UI Framework**: Element Plus
-- **HTTP Client**: Axios
-- **Router**: Vue Router
+- **HTTP Server**: Go standard library (`net/http`)
 
 ## Getting Started
 
 ### Prerequisites
-- Go 1.21 or later
-- Node.js 18 or later
-- npm or yarn
+- Go 1.23 or later
+- MySQL
 
 ### Installation
 1. Clone the repository
@@ -44,27 +39,14 @@ git clone https://github.com/yourusername/llm-gateway.git
 cd llm-gateway
 ```
 
-2. Install backend dependencies
+2. Install dependencies
 ```bash
 go mod tidy
 ```
 
-3. Install frontend dependencies
-```bash
-cd frontend
-npm install
-```
-
 ### Building the Project
-1. Build the frontend
+Build the server binary
 ```bash
-cd frontend
-npm run build
-```
-
-2. Build the backend
-```bash
-cd ..
 go build -o llm-gateway
 ```
 
@@ -73,8 +55,11 @@ go build -o llm-gateway
 ./llm-gateway --host=0.0.0.0 --port=8090
 ```
 
-### Accessing the Web Interface
-Open your browser and navigate to `http://localhost:8090`
+### Verifying the Service
+The root path returns a simple readiness response:
+```bash
+curl http://localhost:8090/
+```
 
 ## API Documentation
 ### OpenAI Compatible Endpoints
