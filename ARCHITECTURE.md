@@ -36,7 +36,7 @@ LLM Gateway 是一个将多种 LLM API 接口聚合到 OpenAI 兼容接口的中
 - `/api/providers`：提供商管理接口
 - `/api/model-mappings`：模型映射管理接口
 - `/api/credentials`：凭证管理接口
-- `/api/logs`：请求日志查询接口
+- `/api/request-logs`：请求日志查询接口
 
 ### 3. 核心功能实现
 - **请求路由**：根据模型名称查找对应的提供商和实际模型，转发请求

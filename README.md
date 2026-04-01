@@ -70,11 +70,11 @@ go build -o llm-gateway
 
 ### Running the Server
 ```bash
-./llm-gateway --host=0.0.0.0 --port=8000
+./llm-gateway --host=0.0.0.0 --port=8090
 ```
 
 ### Accessing the Web Interface
-Open your browser and navigate to `http://localhost:8000`
+Open your browser and navigate to `http://localhost:8090`
 
 ## API Documentation
 ### OpenAI Compatible Endpoints
@@ -92,7 +92,7 @@ Open your browser and navigate to `http://localhost:8000`
 ### Compatibility Notes
 - Public GaiaSec deployment no longer exposes `/api/model-mappings` or `/api/providers`; `/api/model-configs` is the only supported AI configuration contract.
 - `/api/model-mappings` may still exist as an internal compatibility route in `llm-gateway`, but it is not part of the supported GaiaSec control-plane surface.
-- `/api/logs` is a historical path; use `/api/request-logs`.
+- `/api/logs` is retired at the GaiaSec gateway layer; use `/api/request-logs`.
 
 ## Configuration
 ### Model Configuration
