@@ -18,10 +18,14 @@ type MemoryCache struct {
 }
 
 var (
-	globalCache     *MemoryCache
-	cacheOnce       sync.Once
-	modelConfigCache = make(map[string]*models.ModelConfig)
-	modelConfigMu    sync.RWMutex
+	globalCache          *MemoryCache
+	cacheOnce            sync.Once
+	modelConfigCache     = make(map[string]*CacheItem)
+	modelConfigMu        sync.RWMutex
+	modelConfigCacheOnce sync.Once
+	modelConfigCleanupCh chan struct{}
+	// Default TTL for model config cache - adjust as needed
+	ModelConfigCacheTTL = 5 * time.Minute
 )
 
 func GetCache() *MemoryCache {
@@ -77,17 +81,36 @@ func (c *MemoryCache) cleanup() {
 	}
 }
 
-func SetModelConfig(name string, config *models.ModelConfig) {
-	modelConfigMu.Lock()
-	defer modelConfigMu.Unlock()
-	modelConfigCache[name] = config
+func SetModelConfigs(name string, configs []models.ModelConfig) {
+	SetModelConfigsWithTTL(name, configs, ModelConfigCacheTTL)
 }
 
-func GetModelConfigFromCache(name string) (*models.ModelConfig, bool) {
+func SetModelConfigsWithTTL(name string, configs []models.ModelConfig, ttl time.Duration) {
+	modelConfigMu.Lock()
+	defer modelConfigMu.Unlock()
+	copied := make([]models.ModelConfig, len(configs))
+	copy(copied, configs)
+	modelConfigCache[name] = &CacheItem{
+		Value:      copied,
+		Expiration: time.Now().Add(ttl).UnixNano(),
+	}
+	startModelConfigCleanup()
+}
+
+func GetModelConfigsFromCache(name string) ([]models.ModelConfig, bool) {
 	modelConfigMu.RLock()
 	defer modelConfigMu.RUnlock()
-	config, found := modelConfigCache[name]
-	return config, found
+	item, found := modelConfigCache[name]
+	if !found {
+		return nil, false
+	}
+	if time.Now().UnixNano() > item.Expiration {
+		return nil, false
+	}
+	config := item.Value.([]models.ModelConfig)
+	copied := make([]models.ModelConfig, len(config))
+	copy(copied, config)
+	return copied, true
 }
 
 func InvalidateModelConfigCache(name string) {
@@ -99,5 +122,30 @@ func InvalidateModelConfigCache(name string) {
 func InvalidateAllModelConfigCache() {
 	modelConfigMu.Lock()
 	defer modelConfigMu.Unlock()
-	modelConfigCache = make(map[string]*models.ModelConfig)
+	modelConfigCache = make(map[string]*CacheItem)
+}
+
+func startModelConfigCleanup() {
+	modelConfigCacheOnce.Do(func() {
+		modelConfigCleanupCh = make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-modelConfigCleanupCh:
+					return
+				case <-ticker.C:
+					modelConfigMu.Lock()
+					now := time.Now().UnixNano()
+					for key, item := range modelConfigCache {
+						if now > item.Expiration {
+							delete(modelConfigCache, key)
+						}
+					}
+					modelConfigMu.Unlock()
+				}
+			}
+		}()
+	})
 }

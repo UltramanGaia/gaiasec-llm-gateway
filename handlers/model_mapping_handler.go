@@ -37,6 +37,8 @@ func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	InvalidateAllModelConfigCache()
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(config)
 }
@@ -118,6 +120,8 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	InvalidateAllModelConfigCache()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
 }
@@ -138,6 +142,8 @@ func (h *ModelConfigHandler) DeleteModelConfig(w http.ResponseWriter, r *http.Re
 		http.Error(w, "model config not found", http.StatusNotFound)
 		return
 	}
+
+	InvalidateAllModelConfigCache()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"success": true})

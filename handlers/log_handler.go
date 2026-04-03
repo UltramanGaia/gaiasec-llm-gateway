@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	log "github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 	"llm-gateway/models"
-	log "github.com/sirupsen/logrus"
 )
 
 // LogHandler 处理RequestLog相关的API请求
@@ -139,14 +138,14 @@ type ReplayRequest struct {
 
 // ReplayResponse 定义重放响应的结构
 type ReplayResponse struct {
-	OriginalRequest  string      `json:"originalRequest"`
-	ModifiedRequest  string      `json:"modifiedRequest"`
-	OriginalResponse string      `json:"originalResponse"`
-	NewResponse      string      `json:"newResponse"`
-	ModelName        string      `json:"modelName"`
-	ActualModelName  string      `json:"actualModelName"`
-	ResponseTime     int64       `json:"responseTime"`
-	Error            string      `json:"error,omitempty"`
+	OriginalRequest  string `json:"originalRequest"`
+	ModifiedRequest  string `json:"modifiedRequest"`
+	OriginalResponse string `json:"originalResponse"`
+	NewResponse      string `json:"newResponse"`
+	ModelName        string `json:"modelName"`
+	ActualModelName  string `json:"actualModelName"`
+	ResponseTime     int64  `json:"responseTime"`
+	Error            string `json:"error,omitempty"`
 }
 
 // ReplayLog 重放指定的请求日志，支持覆盖参数
@@ -189,58 +188,50 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		modifiedRequest["model"] = modelName
 	}
 
-	var config models.ModelConfig
-	if err := h.DB.Where("name = ?", modelName).First(&config).Error; err != nil {
-		http.Error(w, "Model config not found: "+modelName, http.StatusNotFound)
-		return
-	}
-
-	modifiedRequest["model"] = config.ModelName
-	updatedBody, err := json.Marshal(modifiedRequest)
+	modifiedRequestJSON, err := json.Marshal(modifiedRequest)
 	if err != nil {
 		http.Error(w, "Failed to marshal modified request", http.StatusInternalServerError)
 		return
 	}
 
-	providerURL := config.APIBaseURL
-	if !strings.HasSuffix(providerURL, "/") {
-		providerURL += "/"
-	}
-	providerURL += "chat/completions"
-
-	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(updatedBody))
-	if err != nil {
-		http.Error(w, "Failed to create request", http.StatusInternalServerError)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-
 	isStream := false
 	if streamValue, ok := modifiedRequest["stream"].(bool); ok && streamValue {
 		isStream = true
-		req.Header.Set("Accept", "text/event-stream")
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	startTime := time.Now()
-	resp, err := client.Do(req)
+	chatHandler := NewChatHandler(h.DB)
+	configs, err := chatHandler.getModelConfigs(modelName)
 	if err != nil {
-		log.Error("Failed to send request to provider: " + err.Error())
+		http.Error(w, "Model config not found: "+modelName, http.StatusNotFound)
+		return
+	}
+
+	startTime := time.Now()
+	resp, selectedConfig, attempts, err := chatHandler.dispatchProviderRequest(r.Header, modifiedRequest, modelName, configs, isStream)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"model":    modelName,
+			"attempts": attempts,
+		}).Error("Failed to replay request against provider")
 		response := ReplayResponse{
 			OriginalRequest:  reqLog.Request,
-			ModifiedRequest:  string(updatedBody),
+			ModifiedRequest:  string(modifiedRequestJSON),
 			OriginalResponse: reqLog.Response,
 			Error:            err.Error(),
 			ModelName:        modelName,
-			ActualModelName:  config.ModelName,
+			ActualModelName:  "",
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
 		return
 	}
 	defer resp.Body.Close()
+
+	updatedBody, err := buildProviderRequestBody(modifiedRequest, selectedConfig)
+	if err != nil {
+		http.Error(w, "Failed to marshal modified request", http.StatusInternalServerError)
+		return
+	}
 
 	responseTime := time.Since(startTime).Milliseconds()
 
@@ -262,7 +253,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		OriginalResponse: reqLog.Response,
 		NewResponse:      newResponse,
 		ModelName:        modelName,
-		ActualModelName:  config.ModelName,
+		ActualModelName:  selectedConfig.ModelName,
 		ResponseTime:     responseTime,
 	}
 

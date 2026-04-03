@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"llm-gateway/models"
@@ -50,53 +49,14 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]interfac
 	return body, requestBody, modelName, userToken, isStream, nil
 }
 
-func (h *ChatHandler) getModelConfig(modelName string) (models.ModelConfig, error) {
-	log.WithField("model", modelName).Info("Looking up model config")
-
-	if config, found := GetModelConfigFromCache(modelName); found {
-		log.WithFields(log.Fields{
-			"model":      modelName,
-			"api_base":   config.APIBaseURL,
-			"model_name": config.ModelName,
-		}).Info("Model config found in cache")
-		return *config, nil
-	}
-
-	var config models.ModelConfig
-	if err := h.DB.Where("name = ? AND enabled = ?", modelName, true).First(&config).Error; err != nil {
-		log.WithError(err).WithField("model", modelName).Error("Model config not found or disabled")
-		return models.ModelConfig{}, err
-	}
-
-	SetModelConfig(modelName, &config)
-
-	log.WithFields(log.Fields{
-		"model":      modelName,
-		"api_base":   config.APIBaseURL,
-		"model_name": config.ModelName,
-	}).Info("Model config found and cached")
-
-	return config, nil
-}
-
-func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[string]interface{}, config models.ModelConfig, isStream bool) (*http.Response, error) {
-	requestBody["model"] = config.ModelName
-	updatedBody, err := json.Marshal(requestBody)
+func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[string]interface{}, config models.ModelConfig, isStream bool) (*http.Response, error) {
+	updatedBody, err := buildProviderRequestBody(requestBody, config)
 	if err != nil {
 		log.WithError(err).Error("Failed to marshal request body for provider")
 		return nil, err
 	}
 
-	reasoningVal, reasoningOk := requestBody["reasoning"].(map[string]interface{})
-	if reasoningOk && reasoningVal["effort"] != nil {
-		reasoningVal["effort"] = "none"
-	}
-
-	providerURL := config.APIBaseURL
-	if !strings.HasSuffix(providerURL, "/") {
-		providerURL += "/"
-	}
-	providerURL += "chat/completions"
+	providerURL := buildProviderChatURL(config.APIBaseURL)
 
 	log.WithFields(log.Fields{
 		"url":         providerURL,
@@ -111,7 +71,9 @@ func (h *ChatHandler) sendProviderRequest(r *http.Request, requestBody map[strin
 		return nil, err
 	}
 
-	req.Header = r.Header.Clone()
+	if headers != nil {
+		req.Header = headers.Clone()
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 

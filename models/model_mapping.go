@@ -6,7 +6,7 @@ import (
 
 type ModelConfig struct {
 	ID          uint      `gorm:"primarykey" json:"id"`
-	Name        string    `gorm:"unique;not null;type:varchar(255)" json:"name"`
+	Name        string    `gorm:"not null;type:varchar(255);index" json:"name"`
 	ModelName   string    `gorm:"not null;type:varchar(255)" json:"modelName"`
 	APIBaseURL  string    `gorm:"not null;type:varchar(500)" json:"apiBaseUrl"`
 	APIKey      string    `gorm:"not null;type:varchar(500)" json:"apiKey"`

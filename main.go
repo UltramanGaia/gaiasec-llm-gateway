@@ -77,7 +77,41 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	if err := removeLegacyModelConfigNameUniqueIndexes(db); err != nil {
+		return nil, err
+	}
+
 	return db, nil
+}
+
+func removeLegacyModelConfigNameUniqueIndexes(db *gorm.DB) error {
+	type uniqueIndexRow struct {
+		IndexName string `gorm:"column:index_name"`
+	}
+
+	var indexes []uniqueIndexRow
+	if err := db.Raw(`
+		SELECT DISTINCT INDEX_NAME AS index_name
+		FROM information_schema.statistics
+		WHERE table_schema = DATABASE()
+		  AND table_name = ?
+		  AND column_name = ?
+		  AND non_unique = 0
+	`, (&models.ModelConfig{}).TableName(), "name").Scan(&indexes).Error; err != nil {
+		return err
+	}
+
+	for _, index := range indexes {
+		if index.IndexName == "" || index.IndexName == "PRIMARY" {
+			continue
+		}
+		if err := db.Migrator().DropIndex(&models.ModelConfig{}, index.IndexName); err != nil {
+			return err
+		}
+		log.WithField("index", index.IndexName).Info("Dropped legacy unique index for model config name")
+	}
+
+	return nil
 }
 
 var host string

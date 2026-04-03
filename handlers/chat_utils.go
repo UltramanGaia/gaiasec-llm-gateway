@@ -72,14 +72,19 @@ func (h *ChatHandler) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	modelsList := make([]Model, len(configs))
-	for i, c := range configs {
-		modelsList[i] = Model{
+	modelsList := make([]Model, 0, len(configs))
+	seen := make(map[string]struct{}, len(configs))
+	for _, c := range configs {
+		if _, exists := seen[c.Name]; exists {
+			continue
+		}
+		seen[c.Name] = struct{}{}
+		modelsList = append(modelsList, Model{
 			ID:      c.Name,
 			Object:  "model",
 			Created: now,
 			OwnedBy: "system",
-		}
+		})
 	}
 
 	response := ModelsResponse{

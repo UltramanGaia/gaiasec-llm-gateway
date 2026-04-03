@@ -52,23 +52,32 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	config, err := h.getModelConfig(modelName)
+	configs, err := h.getModelConfigs(modelName)
 	if err != nil {
 		log.WithError(err).WithField("model", modelName).Error("Model config not found")
 		http.Error(w, "Model not found: "+modelName, http.StatusNotFound)
 		return
 	}
 
-	resp, err := h.sendProviderRequest(r, requestBody, config, isStream)
+	resp, selectedConfig, attempts, err := h.dispatchProviderRequest(r.Header, requestBody, modelName, configs, isStream)
 	if err != nil {
-		log.WithError(err).Error("Failed to send request to provider")
+		log.WithError(err).WithFields(log.Fields{
+			"model":    modelName,
+			"attempts": attempts,
+		}).Error("Failed to send request to provider")
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.WithField("status_code", resp.StatusCode).Warn("Provider returned non-2xx status code, skipping log")
+		log.WithFields(log.Fields{
+			"status_code":   resp.StatusCode,
+			"model":         modelName,
+			"backend_model": selectedConfig.ModelName,
+			"backend_id":    selectedConfig.ID,
+			"attempts":      attempts,
+		}).Warn("Provider returned non-2xx status code after failover, skipping log")
 		for key, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)
@@ -103,8 +112,11 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.WithFields(log.Fields{
-		"model":      modelName,
-		"is_stream":  isStream,
-		"elapsed_ms": time.Since(startTime).Milliseconds(),
+		"model":         modelName,
+		"backend_model": selectedConfig.ModelName,
+		"backend_id":    selectedConfig.ID,
+		"is_stream":     isStream,
+		"attempts":      attempts,
+		"elapsed_ms":    time.Since(startTime).Milliseconds(),
 	}).Info("Chat completion request completed")
 }
