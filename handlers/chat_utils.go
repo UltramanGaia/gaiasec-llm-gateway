@@ -3,8 +3,6 @@ package handlers
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,18 +23,7 @@ var (
 			return new(gzip.Reader)
 		},
 	}
-	gzipWriterPool = sync.Pool{
-		New: func() interface{} {
-			return gzip.NewWriter(nil)
-		},
-	}
 )
-
-func calculateFingerprint(request, modelName string) string {
-	data := request + "|" + modelName
-	hash := md5.Sum([]byte(data))
-	return hex.EncodeToString(hash[:])
-}
 
 func gzipDecode(input []byte) ([]byte, error) {
 	reader := gzipReaderPool.Get().(*gzip.Reader)
@@ -55,27 +42,6 @@ func gzipDecode(input []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	result := make([]byte, buffer.Len())
-	copy(result, buffer.Bytes())
-	return result, nil
-}
-
-func gzipEncode(input []byte) ([]byte, error) {
-	buffer := bufferPool.Get().(*bytes.Buffer)
-	defer bufferPool.Put(buffer)
-	buffer.Reset()
-
-	writer := gzipWriterPool.Get().(*gzip.Writer)
-	defer gzipWriterPool.Put(writer)
-	writer.Reset(buffer)
-
-	_, err := writer.Write(input)
-	if err != nil {
-		writer.Close()
-		return nil, err
-	}
-	writer.Close()
 
 	result := make([]byte, buffer.Len())
 	copy(result, buffer.Bytes())

@@ -15,7 +15,6 @@ import (
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
 	log.Info("Starting stream response handling")
 
-	var fullResponse strings.Builder
 	var contentOnly strings.Builder
 	var reasoningContentOnly strings.Builder
 
@@ -65,8 +64,6 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-
-		fullResponse.WriteString(line)
 
 		if strings.HasPrefix(strings.TrimSpace(line), "data:") {
 			jsonStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
@@ -173,20 +170,6 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 
 	respData, _ := json.Marshal(cachedResp)
 	reqLog.Response = string(respData)
-
-	streamData := fullResponse.String()
-	compressedData, err := gzipEncode([]byte(streamData))
-	if err != nil {
-		log.WithError(err).Error("Failed to gzip compress stream response")
-		reqLog.StreamResponse = []byte(streamData)
-	} else {
-		reqLog.StreamResponse = compressedData
-		log.WithFields(log.Fields{
-			"original_size":   len(streamData),
-			"compressed_size": len(compressedData),
-			"ratio":           float64(len(compressedData)) / float64(len(streamData)) * 100,
-		}).Debug("Stream response compressed")
-	}
 }
 
 func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {

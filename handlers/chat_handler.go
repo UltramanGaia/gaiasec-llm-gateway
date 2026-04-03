@@ -12,13 +12,13 @@ import (
 )
 
 type ChatHandler struct {
-	DB           *gorm.DB
+	DB             *gorm.DB
 	asyncLogWriter *AsyncLogWriter
 }
 
 func NewChatHandler(db *gorm.DB) *ChatHandler {
 	return &ChatHandler{
-		DB:           db,
+		DB:             db,
 		asyncLogWriter: GetAsyncLogWriter(db),
 	}
 }
@@ -39,17 +39,10 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cached, fingerprint := h.handleCache(w, body, modelName, isStream)
-	if cached {
-		log.WithField("elapsed", time.Since(startTime).Milliseconds()).Info("Request served from cache")
-		return
-	}
-
 	reqLog := models.RequestLog{
-		CreatedAt:   time.Now(),
-		ModelName:   modelName,
-		Request:     string(body),
-		Fingerprint: fingerprint,
+		CreatedAt: time.Now(),
+		ModelName: modelName,
+		Request:   string(body),
 	}
 	shouldLog := false
 	defer func() {
