@@ -12,8 +12,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
+func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
 	log.Info("Starting stream response handling")
+	h.handleOpenAIStreamResponse(w, resp, reqLog, config)
+}
+
+func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
+	log.Info("Starting OpenAI stream response handling")
 
 	var contentOnly strings.Builder
 	var reasoningContentOnly strings.Builder
@@ -172,7 +177,7 @@ func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Res
 	reqLog.Response = string(respData)
 }
 
-func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {
+func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
 	log.Info("Starting non-stream response handling")
 
 	respBody, err := io.ReadAll(resp.Body)
