@@ -194,6 +194,12 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var modifiedRequestRaw map[string]json.RawMessage
+	if err := json.Unmarshal(modifiedRequestJSON, &modifiedRequestRaw); err != nil {
+		http.Error(w, "Failed to prepare modified request", http.StatusInternalServerError)
+		return
+	}
+
 	isStream := false
 	if streamValue, ok := modifiedRequest["stream"].(bool); ok && streamValue {
 		isStream = true
@@ -207,7 +213,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startTime := time.Now()
-	resp, selectedConfig, attempts, err := chatHandler.dispatchProviderRequest(r.Header, modifiedRequest, modelName, configs, isStream)
+	resp, selectedConfig, attempts, err := chatHandler.dispatchProviderRequest(r.Header, modifiedRequestRaw, modelName, configs, isStream)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"model":    modelName,
@@ -227,7 +233,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	updatedBody, err := buildProviderRequestBody(modifiedRequest, selectedConfig)
+	updatedBody, err := buildProviderRequestBody(modifiedRequestRaw, selectedConfig)
 	if err != nil {
 		http.Error(w, "Failed to marshal modified request", http.StatusInternalServerError)
 		return

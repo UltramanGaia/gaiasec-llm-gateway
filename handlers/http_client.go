@@ -14,15 +14,33 @@ var (
 	streamClientOnce sync.Once
 )
 
+const (
+	upstreamRequestTimeout        = 120 * time.Second
+	upstreamDialTimeout           = 10 * time.Second
+	upstreamKeepAlive             = 30 * time.Second
+	upstreamTLSHandshakeTimeout   = 10 * time.Second
+	upstreamResponseHeaderTimeout = 30 * time.Second
+	upstreamExpectContinueTimeout = 1 * time.Second
+	upstreamIdleConnTimeout       = 90 * time.Second
+)
+
 func GetHTTPClient() *http.Client {
 	httpClientOnce.Do(func() {
 		httpClient = &http.Client{
-			Timeout: 300 * time.Second,
+			Timeout: upstreamRequestTimeout,
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     300 * time.Second,
-				DisableCompression:  false,
+				MaxIdleConns:          200,
+				MaxIdleConnsPerHost:   50,
+				MaxConnsPerHost:       100,
+				IdleConnTimeout:       upstreamIdleConnTimeout,
+				TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
+				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+				ExpectContinueTimeout: upstreamExpectContinueTimeout,
+				DisableCompression:    false,
+				DialContext: (&net.Dialer{
+					Timeout:   upstreamDialTimeout,
+					KeepAlive: upstreamKeepAlive,
+				}).DialContext,
 			},
 		}
 	})
@@ -33,15 +51,18 @@ func GetStreamHTTPClient() *http.Client {
 	streamClientOnce.Do(func() {
 		streamHttpClient = &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     300 * time.Second,
+				MaxIdleConns:        200,
+				MaxIdleConnsPerHost: 50,
+				MaxConnsPerHost:     100,
+				IdleConnTimeout:     upstreamIdleConnTimeout,
 				DisableCompression:  false,
 				DialContext: (&net.Dialer{
-					Timeout:   300 * time.Second,
-					KeepAlive: 300 * time.Second,
+					Timeout:   upstreamDialTimeout,
+					KeepAlive: upstreamKeepAlive,
 				}).DialContext,
-				ResponseHeaderTimeout: 3000 * time.Second,
+				TLSHandshakeTimeout:   upstreamTLSHandshakeTimeout,
+				ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+				ExpectContinueTimeout: upstreamExpectContinueTimeout,
 			},
 		}
 	})

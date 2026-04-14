@@ -10,13 +10,29 @@ import (
 	"llm-gateway/models"
 )
 
+func mustRawMessageMap(t *testing.T, payload interface{}) map[string]json.RawMessage {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal payload: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal raw payload: %v", err)
+	}
+
+	return raw
+}
+
 func TestBuildProviderRequestBodyDoesNotMutateOriginalRequest(t *testing.T) {
-	requestBody := map[string]interface{}{
+	requestBody := mustRawMessageMap(t, map[string]interface{}{
 		"model": "auto",
 		"reasoning": map[string]interface{}{
 			"effort": "high",
 		},
-	}
+	})
 
 	body, err := buildProviderRequestBody(requestBody, models.ModelConfig{ModelName: "backend-a"})
 	if err != nil {
@@ -37,13 +53,20 @@ func TestBuildProviderRequestBodyDoesNotMutateOriginalRequest(t *testing.T) {
 		t.Fatalf("expected reasoning.effort to be overwritten to none, got %#v", payload["reasoning"])
 	}
 
-	if requestBody["model"] != "auto" {
-		t.Fatalf("original request model was mutated: %v", requestBody["model"])
+	var originalModel string
+	if err := json.Unmarshal(requestBody["model"], &originalModel); err != nil {
+		t.Fatalf("failed to read original model: %v", err)
+	}
+	if originalModel != "auto" {
+		t.Fatalf("original request model was mutated: %v", originalModel)
 	}
 
-	originalReasoning, ok := requestBody["reasoning"].(map[string]interface{})
-	if !ok || originalReasoning["effort"] != "high" {
-		t.Fatalf("original reasoning payload was mutated: %#v", requestBody["reasoning"])
+	var originalReasoning map[string]interface{}
+	if err := json.Unmarshal(requestBody["reasoning"], &originalReasoning); err != nil {
+		t.Fatalf("failed to read original reasoning: %v", err)
+	}
+	if originalReasoning["effort"] != "high" {
+		t.Fatalf("original reasoning payload was mutated: %#v", originalReasoning)
 	}
 }
 
@@ -122,12 +145,12 @@ func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
 		{ID: 2, Name: "auto-failover", ModelName: "backend-b", APIBaseURL: secondProvider.URL, APIKey: "key-b"},
 	}
 
-	requestBody := map[string]interface{}{
+	requestBody := mustRawMessageMap(t, map[string]interface{}{
 		"model": "auto-failover",
 		"messages": []map[string]string{
 			{"role": "user", "content": "hello"},
 		},
-	}
+	})
 
 	resp, selectedConfig, attempts, err := handler.dispatchProviderRequest(http.Header{"X-Test": []string{"1"}}, requestBody, "auto-failover", configs, false)
 	if err != nil {
@@ -150,7 +173,11 @@ func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
 	if secondRequestModel != "backend-b" {
 		t.Fatalf("expected second backend request model to be rewritten, got %q", secondRequestModel)
 	}
-	if requestBody["model"] != "auto-failover" {
-		t.Fatalf("original request model was mutated: %v", requestBody["model"])
+	var originalModel string
+	if err := json.Unmarshal(requestBody["model"], &originalModel); err != nil {
+		t.Fatalf("failed to read original model: %v", err)
+	}
+	if originalModel != "auto-failover" {
+		t.Fatalf("original request model was mutated: %v", originalModel)
 	}
 }

@@ -78,22 +78,29 @@ func buildProviderChatURL(apiBaseURL string) string {
 	return providerURL + "chat/completions"
 }
 
-func buildProviderRequestBody(requestBody map[string]interface{}, config models.ModelConfig) ([]byte, error) {
-	bodyCopy := make(map[string]interface{}, len(requestBody))
+func buildProviderRequestBody(requestBody map[string]json.RawMessage, config models.ModelConfig) ([]byte, error) {
+	bodyCopy := make(map[string]json.RawMessage, len(requestBody)+1)
 	for key, value := range requestBody {
 		bodyCopy[key] = value
 	}
-	bodyCopy["model"] = config.ModelName
+	modelJSON, err := json.Marshal(config.ModelName)
+	if err != nil {
+		return nil, err
+	}
+	bodyCopy["model"] = modelJSON
 
-	if reasoningVal, ok := requestBody["reasoning"].(map[string]interface{}); ok {
-		reasoningCopy := make(map[string]interface{}, len(reasoningVal))
-		for key, value := range reasoningVal {
-			reasoningCopy[key] = value
+	if reasoningRaw, ok := requestBody["reasoning"]; ok && len(reasoningRaw) > 0 {
+		var reasoningCopy map[string]json.RawMessage
+		if err := json.Unmarshal(reasoningRaw, &reasoningCopy); err == nil {
+			if _, exists := reasoningCopy["effort"]; exists {
+				reasoningCopy["effort"] = json.RawMessage(`"none"`)
+				updatedReasoning, err := json.Marshal(reasoningCopy)
+				if err != nil {
+					return nil, err
+				}
+				bodyCopy["reasoning"] = updatedReasoning
+			}
 		}
-		if reasoningCopy["effort"] != nil {
-			reasoningCopy["effort"] = "none"
-		}
-		bodyCopy["reasoning"] = reasoningCopy
 	}
 
 	return json.Marshal(bodyCopy)
@@ -133,7 +140,7 @@ func cloneFailureResponse(failure *providerFailureResponse) *http.Response {
 	}
 }
 
-func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody map[string]interface{}, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, []providerAttempt, error) {
+func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody map[string]json.RawMessage, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, []providerAttempt, error) {
 	orderedConfigs := buildAttemptOrder(configs)
 	attempts := make([]providerAttempt, 0, len(orderedConfigs))
 

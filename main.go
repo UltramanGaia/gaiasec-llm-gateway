@@ -298,7 +298,16 @@ func main() {
 
 	handler := rateLimitMiddleware(rateLimiter, accessLogMiddleware(mux))
 
-	if err := http.ListenAndServe(address, handler); err != nil {
+	server := &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}
 }

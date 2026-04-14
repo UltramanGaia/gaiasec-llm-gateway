@@ -13,7 +13,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]interface{}, string, string, bool, error) {
+func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.RawMessage, string, string, bool, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.WithError(err).Error("Failed to read request body")
@@ -21,23 +21,25 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]interfac
 	}
 	log.WithField("body_length", len(body)).Debug("Request body read successfully")
 
-	var requestBody map[string]interface{}
+	var requestBody map[string]json.RawMessage
 	if err := json.Unmarshal(body, &requestBody); err != nil {
 		log.WithError(err).WithField("body", string(body)).Error("Failed to parse request body as JSON")
 		return nil, nil, "", "", false, err
 	}
 
-	modelName, ok := requestBody["model"].(string)
-	if !ok || modelName == "" {
+	var modelName string
+	if rawModel, ok := requestBody["model"]; !ok || json.Unmarshal(rawModel, &modelName) != nil || modelName == "" {
 		log.Error("Model name is missing in request")
 		return nil, nil, "", "", false, errors.New("Model name is required")
 	}
 
 	userToken := r.Header.Get("Authorization")
 
-	isStream := false
-	if streamValue, ok := requestBody["stream"].(bool); ok && streamValue {
-		isStream = true
+	var isStream bool
+	if rawStream, ok := requestBody["stream"]; ok {
+		if err := json.Unmarshal(rawStream, &isStream); err != nil {
+			isStream = false
+		}
 	}
 
 	log.WithFields(log.Fields{
@@ -49,7 +51,7 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]interfac
 	return body, requestBody, modelName, userToken, isStream, nil
 }
 
-func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[string]interface{}, config models.ModelConfig, isStream bool) (*http.Response, error) {
+func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[string]json.RawMessage, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	updatedBody, err := buildProviderRequestBody(requestBody, config)
 	if err != nil {
 		log.WithError(err).Error("Failed to marshal request body for provider")
