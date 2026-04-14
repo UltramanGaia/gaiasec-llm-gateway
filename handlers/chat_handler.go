@@ -50,8 +50,21 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		Request:   string(body),
 	}
 	shouldLog := false
+	var selectedLease *backendRequestLease
+	requestSucceeded := false
 	defer func() {
 		reqLog.ResponseTime = time.Since(startTime).Milliseconds()
+		if reqLog.FirstTokenLatency == 0 && reqLog.Response != "" {
+			reqLog.FirstTokenLatency = reqLog.ResponseTime
+		}
+		if selectedLease != nil {
+			selectedLease.Finish(backendObservation{
+				Success:           requestSucceeded,
+				ResponseTimeMS:    reqLog.ResponseTime,
+				FirstTokenLatency: reqLog.FirstTokenLatency,
+				AvgTokenLatency:   reqLog.AvgTokenLatency,
+			})
+		}
 		if shouldLog && reqLog.Response != "" {
 			h.asyncLogWriter.Write(&reqLog)
 		}
@@ -64,7 +77,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, selectedConfig, attempts, err := h.dispatchProviderRequest(r.Header, requestBody, modelName, configs, isStream)
+	resp, selectedConfig, lease, attempts, err := h.dispatchProviderRequest(r.Header, requestBody, modelName, configs, isStream)
 	if err != nil {
 		log.WithError(err).WithFields(log.Fields{
 			"model":    modelName,
@@ -74,6 +87,13 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	selectedLease = lease
+	reqLog.BackendConfigID = selectedConfig.ID
+	reqLog.BackendModelName = selectedConfig.ModelName
+	reqLog.BackendAPIBaseURL = selectedConfig.APIBaseURL
+	if lease != nil {
+		reqLog.ActiveRequests = lease.ActiveRequestsOnStart()
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.WithFields(log.Fields{
@@ -115,6 +135,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if reqLog.Response != "" {
 		shouldLog = true
 	}
+	requestSucceeded = true
 
 	log.WithFields(log.Fields{
 		"model":         modelName,
@@ -167,8 +188,21 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		Request:   string(body),
 	}
 	shouldLog := false
+	var selectedLease *backendRequestLease
+	requestSucceeded := false
 	defer func() {
 		reqLog.ResponseTime = time.Since(startTime).Milliseconds()
+		if reqLog.FirstTokenLatency == 0 && reqLog.Response != "" {
+			reqLog.FirstTokenLatency = reqLog.ResponseTime
+		}
+		if selectedLease != nil {
+			selectedLease.Finish(backendObservation{
+				Success:           requestSucceeded,
+				ResponseTimeMS:    reqLog.ResponseTime,
+				FirstTokenLatency: reqLog.FirstTokenLatency,
+				AvgTokenLatency:   reqLog.AvgTokenLatency,
+			})
+		}
 		if shouldLog && reqLog.Response != "" {
 			h.asyncLogWriter.Write(&reqLog)
 		}
@@ -181,7 +215,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp, selectedConfig, attempts, err := h.dispatchAnthropicRequest(r.Header, body, modelName, configs, isStream)
+	resp, selectedConfig, lease, attempts, err := h.dispatchAnthropicRequest(r.Header, body, modelName, configs, isStream)
 	if err != nil {
 		log.WithError(err).WithFields(log.Fields{
 			"model":    modelName,
@@ -191,6 +225,13 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer resp.Body.Close()
+	selectedLease = lease
+	reqLog.BackendConfigID = selectedConfig.ID
+	reqLog.BackendModelName = selectedConfig.ModelName
+	reqLog.BackendAPIBaseURL = selectedConfig.APIBaseURL
+	if lease != nil {
+		reqLog.ActiveRequests = lease.ActiveRequestsOnStart()
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.WithFields(log.Fields{
@@ -231,6 +272,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 	if reqLog.Response != "" {
 		shouldLog = true
 	}
+	requestSucceeded = true
 
 	log.WithFields(log.Fields{
 		"model":         modelName,
@@ -242,32 +284,41 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 	}).Info("Anthropic messages request completed")
 }
 
-func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, []providerAttempt, error) {
-	orderedConfigs := buildAttemptOrder(configs)
+func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, *backendRequestLease, []providerAttempt, error) {
+	orderedConfigs := buildAttemptOrder(modelName, configs)
 	attempts := make([]providerAttempt, 0, len(orderedConfigs))
 
 	var lastFailure *providerFailureResponse
 	var lastErr error
 
 	for _, config := range orderedConfigs {
+		lease := getBackendRuntimeManager().startRequest(config, modelName)
+		attemptStart := time.Now()
 		resp, err := h.sendAnthropicRequest(headers, body, config, isStream)
 		attempt := providerAttempt{
 			ConfigID:     config.ID,
 			BackendModel: config.ModelName,
 			APIBaseURL:   config.APIBaseURL,
+			ActiveCount:  lease.ActiveRequestsOnStart(),
 		}
 
 		if err != nil {
 			attempt.Error = err.Error()
+			attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
 			attempts = append(attempts, attempt)
+			lease.Finish(backendObservation{
+				Success:        false,
+				ResponseTimeMS: attempt.ResponseTime,
+			})
 			lastErr = err
 			continue
 		}
 
 		attempt.StatusCode = resp.StatusCode
+		attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			attempts = append(attempts, attempt)
-			return resp, config, attempts, nil
+			return resp, config, lease, attempts, nil
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
@@ -275,11 +326,19 @@ func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte,
 		if readErr != nil {
 			attempt.Error = readErr.Error()
 			attempts = append(attempts, attempt)
+			lease.Finish(backendObservation{
+				Success:        false,
+				ResponseTimeMS: attempt.ResponseTime,
+			})
 			lastErr = readErr
 			continue
 		}
 
 		attempts = append(attempts, attempt)
+		lease.Finish(backendObservation{
+			Success:        false,
+			ResponseTimeMS: attempt.ResponseTime,
+		})
 		lastFailure = &providerFailureResponse{
 			StatusCode: resp.StatusCode,
 			Header:     resp.Header.Clone(),
@@ -289,12 +348,12 @@ func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte,
 	}
 
 	if lastFailure != nil {
-		return cloneFailureResponse(lastFailure), lastFailure.Config, attempts, nil
+		return cloneFailureResponse(lastFailure), lastFailure.Config, nil, attempts, nil
 	}
 	if lastErr != nil {
-		return nil, models.ModelConfig{}, attempts, lastErr
+		return nil, models.ModelConfig{}, nil, attempts, lastErr
 	}
-	return nil, models.ModelConfig{}, attempts, errors.New("no available backend model config")
+	return nil, models.ModelConfig{}, nil, attempts, errors.New("no available backend model config")
 }
 
 func (h *ChatHandler) sendAnthropicRequest(headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
@@ -357,6 +416,7 @@ func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *htt
 
 	var contentBuilder strings.Builder
 	chunkCount := 0
+	metrics := newStreamMetricsTracker()
 
 	reader := bufio.NewReader(resp.Body)
 	for {
@@ -369,6 +429,9 @@ func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *htt
 		}
 
 		chunkCount++
+		if lineHasStreamingData(line) {
+			metrics.Record(time.Now())
+		}
 		w.Write([]byte(line))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
@@ -384,6 +447,8 @@ func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *htt
 	if contentBuilder.Len() > 0 {
 		reqLog.Response = contentBuilder.String()
 	}
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
 }
 
 func (h *ChatHandler) passthroughNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {
@@ -405,4 +470,14 @@ func (h *ChatHandler) passthroughNonStreamResponse(w http.ResponseWriter, resp *
 
 	log.WithField("response_length", len(respBody)).Info("Passthrough non-stream completed")
 	return nil
+}
+
+func lineHasStreamingData(line string) bool {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "data:") {
+		return false
+	}
+
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	return payload != "" && payload != "[DONE]"
 }

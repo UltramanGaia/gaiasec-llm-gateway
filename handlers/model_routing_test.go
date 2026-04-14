@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"llm-gateway/models"
 )
@@ -71,6 +72,7 @@ func TestBuildProviderRequestBodyDoesNotMutateOriginalRequest(t *testing.T) {
 }
 
 func TestBuildAttemptOrderUsesRandomOffset(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
 	configs := []models.ModelConfig{
 		{ID: 1, Name: "auto-random", ModelName: "backend-a"},
 		{ID: 2, Name: "auto-random", ModelName: "backend-b"},
@@ -89,7 +91,7 @@ func TestBuildAttemptOrderUsesRandomOffset(t *testing.T) {
 		return 2
 	}
 
-	order := buildAttemptOrder(configs)
+	order := buildAttemptOrder("auto-random", configs)
 
 	if len(order) != 3 {
 		t.Fatalf("unexpected order length: %d", len(order))
@@ -100,6 +102,7 @@ func TestBuildAttemptOrderUsesRandomOffset(t *testing.T) {
 }
 
 func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
 	originalFn := nextRouteOffsetFn
 	defer func() {
 		nextRouteOffsetFn = originalFn
@@ -152,17 +155,21 @@ func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
 		},
 	})
 
-	resp, selectedConfig, attempts, err := handler.dispatchProviderRequest(http.Header{"X-Test": []string{"1"}}, requestBody, "auto-failover", configs, false)
+	resp, selectedConfig, lease, attempts, err := handler.dispatchProviderRequest(http.Header{"X-Test": []string{"1"}}, requestBody, "auto-failover", configs, false)
 	if err != nil {
 		t.Fatalf("dispatchProviderRequest returned error: %v", err)
 	}
 	defer resp.Body.Close()
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected successful failover response, got %d", resp.StatusCode)
 	}
 	if selectedConfig.ID != 2 {
 		t.Fatalf("expected second backend to be selected, got %d", selectedConfig.ID)
+	}
+	if lease == nil || lease.ActiveRequestsOnStart() != 1 {
+		t.Fatalf("expected selected backend lease with active count 1, got %#v", lease)
 	}
 	if len(attempts) != 2 || attempts[0].StatusCode != http.StatusServiceUnavailable || attempts[1].StatusCode != http.StatusOK {
 		t.Fatalf("unexpected attempts: %#v", attempts)
@@ -179,5 +186,46 @@ func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
 	}
 	if originalModel != "auto-failover" {
 		t.Fatalf("original request model was mutated: %v", originalModel)
+	}
+}
+
+func TestBuildAttemptOrderPrefersLowerAdaptiveScore(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	configs := []models.ModelConfig{
+		{ID: 1, Name: "auto-adaptive", ModelName: "slow-backend"},
+		{ID: 2, Name: "auto-adaptive", ModelName: "fast-backend"},
+	}
+
+	manager := getBackendRuntimeManager()
+	slowLease := manager.startRequest(configs[0], "auto-adaptive")
+	slowLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1500, FirstTokenLatency: 900, AvgTokenLatency: 120})
+
+	fastLease := manager.startRequest(configs[1], "auto-adaptive")
+	fastLease.Finish(backendObservation{Success: true, ResponseTimeMS: 300, FirstTokenLatency: 120, AvgTokenLatency: 25})
+
+	order := buildAttemptOrder("auto-adaptive", configs)
+	if len(order) != 2 {
+		t.Fatalf("unexpected order length: %d", len(order))
+	}
+	if order[0].ID != 2 {
+		t.Fatalf("expected fast backend first, got %#v", order)
+	}
+}
+
+func TestStreamMetricsTrackerComputesTTFTAndAverageTokenLatency(t *testing.T) {
+	tracker := &streamMetricsTracker{
+		startTime: time.Unix(100, 0),
+	}
+
+	tracker.Record(time.Unix(100, int64(100*time.Millisecond)))
+	tracker.Record(time.Unix(100, int64(250*time.Millisecond)))
+	tracker.Record(time.Unix(100, int64(550*time.Millisecond)))
+
+	if got := tracker.FirstTokenLatency(); got != 100 {
+		t.Fatalf("expected TTFT 100ms, got %d", got)
+	}
+	if got := tracker.AvgTokenLatency(); got != 225 {
+		t.Fatalf("expected average token latency 225ms, got %f", got)
 	}
 }

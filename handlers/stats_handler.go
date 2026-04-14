@@ -24,16 +24,27 @@ func NewStatsHandler(db *gorm.DB) *StatsHandler {
 }
 
 type StatsResponse struct {
-	TotalRequests   int64   `json:"totalRequests"`
-	ActiveModels    int64   `json:"activeModels"`
-	ModelMappings   int64   `json:"modelMappings"`
-	AvgResponseTime float64 `json:"avgResponseTime"`
+	TotalRequests        int64   `json:"totalRequests"`
+	ActiveModels         int64   `json:"activeModels"`
+	ModelMappings        int64   `json:"modelMappings"`
+	AvgResponseTime      float64 `json:"avgResponseTime"`
+	AvgFirstTokenLatency float64 `json:"avgFirstTokenLatency"`
+	AvgTokenLatency      float64 `json:"avgTokenLatency"`
+	ActiveRequests       int     `json:"activeRequests"`
 }
 
 type ModelStatsResponse struct {
-	ModelName       string  `json:"modelName"`
-	RequestCount    int64   `json:"requestCount"`
-	AvgResponseTime float64 `json:"avgResponseTime"`
+	ModelName            string  `json:"modelName"`
+	RequestCount         int64   `json:"requestCount"`
+	AvgResponseTime      float64 `json:"avgResponseTime"`
+	AvgFirstTokenLatency float64 `json:"avgFirstTokenLatency,omitempty"`
+	AvgTokenLatency      float64 `json:"avgTokenLatency,omitempty"`
+	ActiveRequests       int     `json:"activeRequests,omitempty"`
+	SuccessRate          float64 `json:"successRate,omitempty"`
+	BackendConfigID      uint    `json:"backendConfigId,omitempty"`
+	BackendModelName     string  `json:"backendModelName,omitempty"`
+	BackendAPIBaseURL    string  `json:"backendApiBaseUrl,omitempty"`
+	AdaptiveRoutingScore float64 `json:"adaptiveRoutingScore,omitempty"`
 }
 
 type CachedStats struct {
@@ -72,15 +83,30 @@ func (h *StatsHandler) refreshStatsCache() {
 		Select("COALESCE(avg(response_time), 0)").
 		Scan(&avgResponseTime)
 
+	var avgFirstTokenLatency float64
+	h.DB.Model(&models.RequestLog{}).
+		Select("COALESCE(avg(first_token_latency), 0)").
+		Where("first_token_latency > 0").
+		Scan(&avgFirstTokenLatency)
+
+	var avgTokenLatency float64
+	h.DB.Model(&models.RequestLog{}).
+		Select("COALESCE(avg(avg_token_latency), 0)").
+		Where("avg_token_latency > 0").
+		Scan(&avgTokenLatency)
+
 	if avgResponseTime == 0 {
 		avgResponseTime = 200
 	}
 
 	stats := StatsResponse{
-		TotalRequests:   totalRequests,
-		ActiveModels:    activeModels,
-		ModelMappings:   modelMappings,
-		AvgResponseTime: avgResponseTime,
+		TotalRequests:        totalRequests,
+		ActiveModels:         activeModels,
+		ModelMappings:        modelMappings,
+		AvgResponseTime:      avgResponseTime,
+		AvgFirstTokenLatency: avgFirstTokenLatency,
+		AvgTokenLatency:      avgTokenLatency,
+		ActiveRequests:       totalActiveRequests(),
 	}
 
 	providerStats := h.getProviderStatsFromDB()
@@ -100,10 +126,18 @@ func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 	var providerStats []ModelStatsResponse
 
 	query := `
-		SELECT mc.name as model_name, COUNT(*) as request_count, COALESCE(AVG(rl.response_time), 0) as avg_response_time
+		SELECT
+			rl.model_name,
+			rl.backend_config_id,
+			rl.backend_model_name,
+			rl.backend_api_base_url,
+			COUNT(*) as request_count,
+			COALESCE(AVG(rl.response_time), 0) as avg_response_time,
+			COALESCE(AVG(NULLIF(rl.first_token_latency, 0)), 0) as avg_first_token_latency,
+			COALESCE(AVG(NULLIF(rl.avg_token_latency, 0)), 0) as avg_token_latency
 		FROM request_logs rl
-		LEFT JOIN model_configs mc ON rl.model_name = mc.name
-		GROUP BY mc.name
+		WHERE rl.backend_config_id > 0
+		GROUP BY rl.model_name, rl.backend_config_id, rl.backend_model_name, rl.backend_api_base_url
 		ORDER BY request_count DESC
 		LIMIT 100
 	`
@@ -116,11 +150,23 @@ func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 
 	for rows.Next() {
 		var stat ModelStatsResponse
-		if err := rows.Scan(&stat.ModelName, &stat.RequestCount, &stat.AvgResponseTime); err != nil {
+		if err := rows.Scan(
+			&stat.ModelName,
+			&stat.BackendConfigID,
+			&stat.BackendModelName,
+			&stat.BackendAPIBaseURL,
+			&stat.RequestCount,
+			&stat.AvgResponseTime,
+			&stat.AvgFirstTokenLatency,
+			&stat.AvgTokenLatency,
+		); err != nil {
 			continue
 		}
+		enrichProviderStatWithRuntime(&stat)
 		providerStats = append(providerStats, stat)
 	}
+
+	providerStats = mergeRuntimeProviderStats(providerStats)
 
 	if len(providerStats) == 0 {
 		return getDefaultProviderStats()
@@ -133,7 +179,12 @@ func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 	var modelStats []ModelStatsResponse
 
 	query := `
-		SELECT rl.model_name, COUNT(*) as request_count, COALESCE(AVG(rl.response_time), 0) as avg_response_time
+		SELECT
+			rl.model_name,
+			COUNT(*) as request_count,
+			COALESCE(AVG(rl.response_time), 0) as avg_response_time,
+			COALESCE(AVG(NULLIF(rl.first_token_latency, 0)), 0) as avg_first_token_latency,
+			COALESCE(AVG(NULLIF(rl.avg_token_latency, 0)), 0) as avg_token_latency
 		FROM request_logs rl
 		GROUP BY rl.model_name
 		ORDER BY request_count DESC
@@ -148,7 +199,7 @@ func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 
 	for rows.Next() {
 		var stat ModelStatsResponse
-		if err := rows.Scan(&stat.ModelName, &stat.RequestCount, &stat.AvgResponseTime); err != nil {
+		if err := rows.Scan(&stat.ModelName, &stat.RequestCount, &stat.AvgResponseTime, &stat.AvgFirstTokenLatency, &stat.AvgTokenLatency); err != nil {
 			continue
 		}
 		modelStats = append(modelStats, stat)
@@ -163,17 +214,17 @@ func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 
 func getDefaultProviderStats() []ModelStatsResponse {
 	return []ModelStatsResponse{
-		{ModelName: "auto", RequestCount: 153, AvgResponseTime: 185},
-		{ModelName: "qwen3:30b", RequestCount: 87, AvgResponseTime: 210},
-		{ModelName: "deepseek-chat", RequestCount: 64, AvgResponseTime: 176},
+		{ModelName: "auto", BackendModelName: "backend-a", RequestCount: 153, AvgResponseTime: 185, AvgFirstTokenLatency: 92, AvgTokenLatency: 36},
+		{ModelName: "qwen3:30b", BackendModelName: "backend-b", RequestCount: 87, AvgResponseTime: 210, AvgFirstTokenLatency: 103, AvgTokenLatency: 42},
+		{ModelName: "deepseek-chat", BackendModelName: "backend-c", RequestCount: 64, AvgResponseTime: 176, AvgFirstTokenLatency: 88, AvgTokenLatency: 31},
 	}
 }
 
 func getDefaultModelStats() []ModelStatsResponse {
 	return []ModelStatsResponse{
-		{ModelName: "auto", RequestCount: 98, AvgResponseTime: 150},
-		{ModelName: "qwen3:30b", RequestCount: 76, AvgResponseTime: 195},
-		{ModelName: "deepseek-chat", RequestCount: 45, AvgResponseTime: 165},
+		{ModelName: "auto", RequestCount: 98, AvgResponseTime: 150, AvgFirstTokenLatency: 84, AvgTokenLatency: 29},
+		{ModelName: "qwen3:30b", RequestCount: 76, AvgResponseTime: 195, AvgFirstTokenLatency: 97, AvgTokenLatency: 35},
+		{ModelName: "deepseek-chat", RequestCount: 45, AvgResponseTime: 165, AvgFirstTokenLatency: 79, AvgTokenLatency: 27},
 	}
 }
 
@@ -202,15 +253,30 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		Select("COALESCE(avg(response_time), 0)").
 		Scan(&avgResponseTime)
 
+	var avgFirstTokenLatency float64
+	h.DB.Model(&models.RequestLog{}).
+		Select("COALESCE(avg(first_token_latency), 0)").
+		Where("first_token_latency > 0").
+		Scan(&avgFirstTokenLatency)
+
+	var avgTokenLatency float64
+	h.DB.Model(&models.RequestLog{}).
+		Select("COALESCE(avg(avg_token_latency), 0)").
+		Where("avg_token_latency > 0").
+		Scan(&avgTokenLatency)
+
 	if avgResponseTime == 0 {
 		avgResponseTime = 200
 	}
 
 	stats := StatsResponse{
-		TotalRequests:   totalRequests,
-		ActiveModels:    activeModels,
-		ModelMappings:   modelMappings,
-		AvgResponseTime: avgResponseTime,
+		TotalRequests:        totalRequests,
+		ActiveModels:         activeModels,
+		ModelMappings:        modelMappings,
+		AvgResponseTime:      avgResponseTime,
+		AvgFirstTokenLatency: avgFirstTokenLatency,
+		AvgTokenLatency:      avgTokenLatency,
+		ActiveRequests:       totalActiveRequests(),
 	}
 
 	globalStatsCacheMu.Lock()
@@ -264,6 +330,66 @@ func (h *StatsHandler) GetModelStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(modelStats)
+}
+
+func enrichProviderStatWithRuntime(stat *ModelStatsResponse) {
+	if stat == nil || stat.BackendConfigID == 0 {
+		return
+	}
+
+	for _, snapshot := range getBackendRuntimeManager().snapshots() {
+		if snapshot.ConfigID != stat.BackendConfigID {
+			continue
+		}
+		stat.ActiveRequests = snapshot.ActiveRequests
+		stat.SuccessRate = snapshot.SuccessRate
+		stat.AdaptiveRoutingScore = snapshot.AdaptiveRoutingScore
+		if stat.BackendModelName == "" {
+			stat.BackendModelName = snapshot.BackendModelName
+		}
+		if stat.BackendAPIBaseURL == "" {
+			stat.BackendAPIBaseURL = snapshot.BackendAPIBaseURL
+		}
+		return
+	}
+}
+
+func mergeRuntimeProviderStats(stats []ModelStatsResponse) []ModelStatsResponse {
+	seen := make(map[uint]struct{}, len(stats))
+	for _, stat := range stats {
+		if stat.BackendConfigID != 0 {
+			seen[stat.BackendConfigID] = struct{}{}
+		}
+	}
+
+	for _, snapshot := range getBackendRuntimeManager().snapshots() {
+		if _, ok := seen[snapshot.ConfigID]; ok {
+			continue
+		}
+		stats = append(stats, ModelStatsResponse{
+			ModelName:            snapshot.ModelName,
+			RequestCount:         snapshot.TotalRequests,
+			AvgResponseTime:      snapshot.EWMAResponseTime,
+			AvgFirstTokenLatency: snapshot.EWMAFirstToken,
+			AvgTokenLatency:      snapshot.EWMAAvgTokenLatency,
+			ActiveRequests:       snapshot.ActiveRequests,
+			SuccessRate:          snapshot.SuccessRate,
+			BackendConfigID:      snapshot.ConfigID,
+			BackendModelName:     snapshot.BackendModelName,
+			BackendAPIBaseURL:    snapshot.BackendAPIBaseURL,
+			AdaptiveRoutingScore: snapshot.AdaptiveRoutingScore,
+		})
+	}
+
+	return stats
+}
+
+func totalActiveRequests() int {
+	total := 0
+	for _, snapshot := range getBackendRuntimeManager().snapshots() {
+		total += snapshot.ActiveRequests
+	}
+	return total
 }
 
 func handleError(w http.ResponseWriter, err error) {

@@ -42,6 +42,14 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		query = query.Where("model_name = ?", model)
 	}
 
+	if backendConfigID := r.URL.Query().Get("backendConfigId"); backendConfigID != "" {
+		query = query.Where("backend_config_id = ?", backendConfigID)
+	}
+
+	if backendModel := r.URL.Query().Get("backendModel"); backendModel != "" {
+		query = query.Where("backend_model_name = ?", backendModel)
+	}
+
 	if userToken := r.URL.Query().Get("user_token"); userToken != "" {
 		query = query.Where("user_token = ?", userToken)
 	}
@@ -213,7 +221,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startTime := time.Now()
-	resp, selectedConfig, attempts, err := chatHandler.dispatchProviderRequest(r.Header, modifiedRequestRaw, modelName, configs, isStream)
+	resp, selectedConfig, lease, attempts, err := chatHandler.dispatchProviderRequest(r.Header, modifiedRequestRaw, modelName, configs, isStream)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"model":    modelName,
@@ -232,6 +240,14 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	defer func() {
+		if lease != nil {
+			lease.Finish(backendObservation{
+				Success:        resp.StatusCode >= 200 && resp.StatusCode < 300,
+				ResponseTimeMS: time.Since(startTime).Milliseconds(),
+			})
+		}
+	}()
 
 	updatedBody, err := buildProviderRequestBody(modifiedRequestRaw, selectedConfig)
 	if err != nil {

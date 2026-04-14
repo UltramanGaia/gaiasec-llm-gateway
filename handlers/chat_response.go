@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"llm-gateway/models"
 
@@ -23,6 +24,7 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 
 	var rawStream bytes.Buffer
 	chunkCount := 0
+	metrics := newStreamMetricsTracker()
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
@@ -34,6 +36,9 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 		}
 
 		chunkCount++
+		if lineHasOpenAIStreamToken(line) {
+			metrics.Record(time.Now())
+		}
 		rawStream.WriteString(line)
 		w.Write([]byte(line))
 		if flusher, ok := w.(http.Flusher); ok {
@@ -42,6 +47,8 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 	}
 
 	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
 	responseJSON, contentLength, reasoningLength, err := buildOpenAIStreamLogResponse(rawStream.String())
 	if err != nil {
 		if err == io.EOF {
@@ -243,7 +250,85 @@ func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.
 	}
 
 	w.Write(respBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
 
 	log.WithField("response_length", len(respBody)).Info("Non-stream response completed")
 	return nil
+}
+
+type streamMetricsTracker struct {
+	startTime     time.Time
+	firstTokenAt  time.Time
+	lastTokenAt   time.Time
+	intervalSum   time.Duration
+	intervalCount int
+}
+
+func newStreamMetricsTracker() *streamMetricsTracker {
+	return &streamMetricsTracker{
+		startTime: time.Now(),
+	}
+}
+
+func (t *streamMetricsTracker) Record(at time.Time) {
+	if t == nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	if t.firstTokenAt.IsZero() {
+		t.firstTokenAt = at
+		t.lastTokenAt = at
+		return
+	}
+	t.intervalSum += at.Sub(t.lastTokenAt)
+	t.intervalCount++
+	t.lastTokenAt = at
+}
+
+func (t *streamMetricsTracker) FirstTokenLatency() int64 {
+	if t == nil || t.firstTokenAt.IsZero() {
+		return 0
+	}
+	return t.firstTokenAt.Sub(t.startTime).Milliseconds()
+}
+
+func (t *streamMetricsTracker) AvgTokenLatency() float64 {
+	if t == nil || t.intervalCount == 0 {
+		return 0
+	}
+	return float64(t.intervalSum.Milliseconds()) / float64(t.intervalCount)
+}
+
+func lineHasOpenAIStreamToken(line string) bool {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "data:") {
+		return false
+	}
+
+	jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if jsonStr == "" || jsonStr == "[DONE]" {
+		return false
+	}
+
+	var streamResponse struct {
+		Choices []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err != nil {
+		return false
+	}
+	if len(streamResponse.Choices) == 0 {
+		return false
+	}
+
+	return streamResponse.Choices[0].Delta.Content != "" || streamResponse.Choices[0].Delta.ReasoningContent != ""
 }

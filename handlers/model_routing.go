@@ -23,6 +23,8 @@ type providerAttempt struct {
 	BackendModel string
 	APIBaseURL   string
 	StatusCode   int
+	ResponseTime int64
+	ActiveCount  int
 	Error        string
 }
 
@@ -117,17 +119,8 @@ func defaultRandomRouteOffset(count int) int {
 	return modelRouteRand.Intn(count)
 }
 
-func buildAttemptOrder(configs []models.ModelConfig) []models.ModelConfig {
-	if len(configs) <= 1 {
-		return configs
-	}
-
-	offset := nextRouteOffsetFn(len(configs))
-	ordered := make([]models.ModelConfig, 0, len(configs))
-	for i := 0; i < len(configs); i++ {
-		ordered = append(ordered, configs[(offset+i)%len(configs)])
-	}
-	return ordered
+func buildAttemptOrder(modelName string, configs []models.ModelConfig) []models.ModelConfig {
+	return getBackendRuntimeManager().buildAttemptOrder(modelName, configs)
 }
 
 func cloneFailureResponse(failure *providerFailureResponse) *http.Response {
@@ -140,32 +133,41 @@ func cloneFailureResponse(failure *providerFailureResponse) *http.Response {
 	}
 }
 
-func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody map[string]json.RawMessage, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, []providerAttempt, error) {
-	orderedConfigs := buildAttemptOrder(configs)
+func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody map[string]json.RawMessage, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, *backendRequestLease, []providerAttempt, error) {
+	orderedConfigs := buildAttemptOrder(modelName, configs)
 	attempts := make([]providerAttempt, 0, len(orderedConfigs))
 
 	var lastFailure *providerFailureResponse
 	var lastErr error
 
 	for _, config := range orderedConfigs {
+		lease := getBackendRuntimeManager().startRequest(config, modelName)
+		attemptStart := time.Now()
 		resp, err := h.sendProviderRequest(headers, requestBody, config, isStream)
 		attempt := providerAttempt{
 			ConfigID:     config.ID,
 			BackendModel: config.ModelName,
 			APIBaseURL:   config.APIBaseURL,
+			ActiveCount:  lease.ActiveRequestsOnStart(),
 		}
 
 		if err != nil {
 			attempt.Error = err.Error()
+			attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
 			attempts = append(attempts, attempt)
+			lease.Finish(backendObservation{
+				Success:        false,
+				ResponseTimeMS: attempt.ResponseTime,
+			})
 			lastErr = err
 			continue
 		}
 
 		attempt.StatusCode = resp.StatusCode
+		attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			attempts = append(attempts, attempt)
-			return resp, config, attempts, nil
+			return resp, config, lease, attempts, nil
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
@@ -173,11 +175,19 @@ func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody m
 		if readErr != nil {
 			attempt.Error = readErr.Error()
 			attempts = append(attempts, attempt)
+			lease.Finish(backendObservation{
+				Success:        false,
+				ResponseTimeMS: attempt.ResponseTime,
+			})
 			lastErr = readErr
 			continue
 		}
 
 		attempts = append(attempts, attempt)
+		lease.Finish(backendObservation{
+			Success:        false,
+			ResponseTimeMS: attempt.ResponseTime,
+		})
 		lastFailure = &providerFailureResponse{
 			StatusCode: resp.StatusCode,
 			Header:     resp.Header.Clone(),
@@ -187,10 +197,10 @@ func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody m
 	}
 
 	if lastFailure != nil {
-		return cloneFailureResponse(lastFailure), lastFailure.Config, attempts, nil
+		return cloneFailureResponse(lastFailure), lastFailure.Config, nil, attempts, nil
 	}
 	if lastErr != nil {
-		return nil, models.ModelConfig{}, attempts, lastErr
+		return nil, models.ModelConfig{}, nil, attempts, lastErr
 	}
-	return nil, models.ModelConfig{}, attempts, errors.New("no available backend model config")
+	return nil, models.ModelConfig{}, nil, attempts, errors.New("no available backend model config")
 }
