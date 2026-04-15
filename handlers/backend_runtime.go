@@ -109,6 +109,51 @@ func resetBackendRuntimeManagerForTests() {
 	globalBackendRuntime = newBackendRuntimeManager()
 }
 
+func (m *backendRuntimeManager) resetConfigState(config models.ModelConfig, publicModelName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state := m.states[config.ID]
+	if state == nil {
+		return false
+	}
+
+	state.ModelName = publicModelName
+	state.BackendModelName = config.ModelName
+	state.BackendAPIBaseURL = config.APIBaseURL
+	state.TotalRequests = 0
+	state.SuccessCount = 0
+	state.FailureCount = 0
+	state.EWMAResponseTime = 0
+	state.EWMAFirstToken = 0
+	state.EWMAAvgTokenLatency = 0
+	state.LastUpdatedAt = time.Now()
+
+	return true
+}
+
+func (m *backendRuntimeManager) resetAllState() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := 0
+	for _, state := range m.states {
+		if state == nil {
+			continue
+		}
+		state.TotalRequests = 0
+		state.SuccessCount = 0
+		state.FailureCount = 0
+		state.EWMAResponseTime = 0
+		state.EWMAFirstToken = 0
+		state.EWMAAvgTokenLatency = 0
+		state.LastUpdatedAt = time.Now()
+		count++
+	}
+
+	return count
+}
+
 func (m *backendRuntimeManager) startRequest(config models.ModelConfig, publicModelName string) *backendRequestLease {
 	m.mu.Lock()
 	defer m.mu.Unlock()

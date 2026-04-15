@@ -60,6 +60,13 @@ var (
 	statsCacheTTL      = 5 * time.Minute
 )
 
+func InvalidateStatsCache() {
+	globalStatsCacheMu.Lock()
+	defer globalStatsCacheMu.Unlock()
+
+	globalCachedStats = CachedStats{}
+}
+
 func (h *StatsHandler) startStatsCacheRefresh() {
 	ticker := time.NewTicker(statsCacheTTL)
 	defer ticker.Stop()

@@ -213,6 +213,39 @@ func TestBuildAttemptOrderPrefersLowerAdaptiveScore(t *testing.T) {
 	}
 }
 
+func TestResetConfigStateClearsFailurePenalty(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	config := models.ModelConfig{ID: 1, Name: "auto-reset", ModelName: "backend-a", APIBaseURL: "http://backend-a"}
+	manager := getBackendRuntimeManager()
+
+	lease := manager.startRequest(config, "auto-reset")
+	lease.Finish(backendObservation{Success: false, ResponseTimeMS: 800, FirstTokenLatency: 500, AvgTokenLatency: 100})
+
+	before := manager.snapshots()
+	if len(before) != 1 {
+		t.Fatalf("expected one snapshot before reset, got %d", len(before))
+	}
+	if before[0].FailureCount != 1 || before[0].TotalRequests != 1 {
+		t.Fatalf("expected failure telemetry before reset, got %#v", before[0])
+	}
+
+	if !manager.resetConfigState(config, "auto-reset") {
+		t.Fatalf("expected resetConfigState to report reset")
+	}
+
+	after := manager.snapshots()
+	if len(after) != 1 {
+		t.Fatalf("expected one snapshot after reset, got %d", len(after))
+	}
+	if after[0].FailureCount != 0 || after[0].TotalRequests != 0 {
+		t.Fatalf("expected counters cleared after reset, got %#v", after[0])
+	}
+	if after[0].EWMAResponseTime != 0 || after[0].EWMAFirstToken != 0 || after[0].EWMAAvgTokenLatency != 0 {
+		t.Fatalf("expected latency telemetry cleared after reset, got %#v", after[0])
+	}
+}
+
 func TestStreamMetricsTrackerComputesTTFTAndAverageTokenLatency(t *testing.T) {
 	tracker := &streamMetricsTracker{
 		startTime: time.Unix(100, 0),

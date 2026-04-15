@@ -10,7 +10,7 @@ type ModelConfig struct {
 	ModelName   string    `gorm:"not null;type:varchar(255)" json:"modelName"`
 	APIBaseURL  string    `gorm:"not null;type:varchar(500)" json:"apiBaseUrl"`
 	APIKey      string    `gorm:"not null;type:varchar(500)" json:"apiKey"`
-	MaxTokens   int       `gorm:"default:4096" json:"maxTokens"`
+	MaxTokens   int       `gorm:"default:8192" json:"maxTokens"`
 	Temperature float64   `gorm:"default:0.7" json:"temperature"`
 	Description string    `gorm:"type:varchar(500)" json:"description"`
 	CreatedAt   time.Time `json:"createdAt"`

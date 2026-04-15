@@ -196,6 +196,14 @@ func main() {
 		}
 	})
 
+	mux.HandleFunc("/api/model-configs/{id}/reset-runtime", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			modelConfigHandler.ResetModelConfigRuntime(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	mux.HandleFunc("/api/model-configs/{id}", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -216,6 +224,14 @@ func main() {
 		case http.MethodPost:
 			modelConfigHandler.CreateModelConfig(w, r)
 		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	mux.HandleFunc("/api/model-configs/reset-runtime", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			modelConfigHandler.ResetAllModelConfigRuntime(w, r)
+		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
