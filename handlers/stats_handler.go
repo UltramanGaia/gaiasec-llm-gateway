@@ -138,7 +138,7 @@ func (h *StatsHandler) refreshStatsCache() {
 
 func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 	var providerStats []ModelStatsResponse
-	
+
 	// 计算时间范围
 	since := time.Now().Add(-statsTimeRange)
 
@@ -195,7 +195,7 @@ func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 
 func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 	var modelStats []ModelStatsResponse
-	
+
 	// 计算时间范围
 	since := time.Now().Add(-statsTimeRange)
 
@@ -319,8 +319,9 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 func (h *StatsHandler) GetProviderStats(w http.ResponseWriter, r *http.Request) {
 	globalStatsCacheMu.RLock()
 	if time.Since(globalCachedStats.UpdatedAt) < statsCacheTTL && len(globalCachedStats.ProviderStats) > 0 {
-		providerStats := globalCachedStats.ProviderStats
+		providerStats := append([]ModelStatsResponse(nil), globalCachedStats.ProviderStats...)
 		globalStatsCacheMu.RUnlock()
+		providerStats = refreshProviderStatsRuntime(providerStats)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(providerStats)
 		return
@@ -380,6 +381,20 @@ func enrichProviderStatWithRuntime(stat *ModelStatsResponse) {
 		}
 		return
 	}
+}
+
+func refreshProviderStatsRuntime(stats []ModelStatsResponse) []ModelStatsResponse {
+	runtimeSnapshots := getBackendRuntimeManager().snapshots()
+	for i := range stats {
+		for _, snapshot := range runtimeSnapshots {
+			if stats[i].BackendConfigID != snapshot.ConfigID {
+				continue
+			}
+			stats[i].ActiveRequests = snapshot.ActiveRequests
+			break
+		}
+	}
+	return mergeRuntimeProviderStats(stats)
 }
 
 func mergeRuntimeProviderStats(stats []ModelStatsResponse) []ModelStatsResponse {
