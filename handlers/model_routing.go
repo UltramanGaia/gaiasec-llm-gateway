@@ -139,7 +139,16 @@ func (h *ChatHandler) dispatchProviderRequest(headers http.Header, requestBody m
 	var lastErr error
 
 	for _, config := range orderedConfigs {
-		lease := getBackendRuntimeManager().startRequest(config, modelName)
+		lease, ok := getBackendRuntimeManager().startRequest(config, modelName)
+		if !ok {
+			attempts = append(attempts, providerAttempt{
+				ConfigID:     config.ID,
+				BackendModel: config.ModelName,
+				APIBaseURL:   config.APIBaseURL,
+				Error:        "max concurrency reached",
+			})
+			continue
+		}
 		attemptStart := time.Now()
 		resp, err := h.sendProviderRequest(headers, requestBody, config, isStream)
 		attempt := providerAttempt{

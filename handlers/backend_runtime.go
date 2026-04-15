@@ -154,11 +154,14 @@ func (m *backendRuntimeManager) resetAllState() int {
 	return count
 }
 
-func (m *backendRuntimeManager) startRequest(config models.ModelConfig, publicModelName string) *backendRequestLease {
+func (m *backendRuntimeManager) startRequest(config models.ModelConfig, publicModelName string) (*backendRequestLease, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	state := m.getOrCreateStateLocked(config, publicModelName)
+	if config.MaxConcurrency > 0 && state.ActiveRequests >= config.MaxConcurrency {
+		return nil, false
+	}
 	state.ActiveRequests++
 	state.LastUpdatedAt = time.Now()
 
@@ -170,7 +173,7 @@ func (m *backendRuntimeManager) startRequest(config models.ModelConfig, publicMo
 		backendAPIBaseURL:     config.APIBaseURL,
 		activeRequestsOnStart: state.ActiveRequests,
 		startTime:             time.Now(),
-	}
+	}, true
 }
 
 func (m *backendRuntimeManager) finishRequest(lease *backendRequestLease, observation backendObservation) {
@@ -241,14 +244,13 @@ func (m *backendRuntimeManager) scoreForConfig(config models.ModelConfig) float6
 }
 
 func (m *backendRuntimeManager) buildAttemptOrder(modelName string, configs []models.ModelConfig) []models.ModelConfig {
-	if len(configs) <= 1 {
-		return configs
-	}
-
 	m.mu.RLock()
 	ranked := make([]rankedBackendConfig, 0, len(configs))
 	for _, config := range configs {
 		state := m.states[config.ID]
+		if config.MaxConcurrency > 0 && state != nil && state.ActiveRequests >= config.MaxConcurrency {
+			continue
+		}
 		score := defaultBackendLatencyScore
 		hasTelemetry := false
 		if state != nil {
@@ -263,25 +265,56 @@ func (m *backendRuntimeManager) buildAttemptOrder(modelName string, configs []mo
 	}
 	m.mu.RUnlock()
 
-	if !anyRankedConfigHasTelemetry(ranked) {
-		return buildRandomizedAttemptOrder(configs)
+	if len(ranked) <= 1 {
+		ordered := make([]models.ModelConfig, 0, len(ranked))
+		for _, item := range ranked {
+			ordered = append(ordered, item.config)
+		}
+		return ordered
 	}
 
-	randOffset := nextRouteOffsetFn(len(configs))
 	sort.SliceStable(ranked, func(i, j int) bool {
-		if math.Abs(ranked[i].score-ranked[j].score) > 0.001 {
-			return ranked[i].score < ranked[j].score
+		if ranked[i].config.Priority != ranked[j].config.Priority {
+			return ranked[i].config.Priority < ranked[j].config.Priority
 		}
-
-		leftTie := (int(ranked[i].config.ID) + len(configs) - randOffset) % len(configs)
-		rightTie := (int(ranked[j].config.ID) + len(configs) - randOffset) % len(configs)
-		return leftTie < rightTie
+		return ranked[i].config.ID < ranked[j].config.ID
 	})
 
 	ordered := make([]models.ModelConfig, 0, len(ranked))
-	for _, item := range ranked {
-		ordered = append(ordered, item.config)
+	for start := 0; start < len(ranked); {
+		end := start + 1
+		for end < len(ranked) && ranked[end].config.Priority == ranked[start].config.Priority {
+			end++
+		}
+
+		group := ranked[start:end]
+		if !anyRankedConfigHasTelemetry(group) {
+			available := make([]models.ModelConfig, 0, len(group))
+			for _, item := range group {
+				available = append(available, item.config)
+			}
+			ordered = append(ordered, buildRandomizedAttemptOrder(available)...)
+			start = end
+			continue
+		}
+
+		randOffset := nextRouteOffsetFn(len(group))
+		sort.SliceStable(group, func(i, j int) bool {
+			if math.Abs(group[i].score-group[j].score) > 0.001 {
+				return group[i].score < group[j].score
+			}
+
+			leftTie := (i + len(group) - randOffset) % len(group)
+			rightTie := (j + len(group) - randOffset) % len(group)
+			return leftTie < rightTie
+		})
+
+		for _, item := range group {
+			ordered = append(ordered, item.config)
+		}
+		start = end
 	}
+
 	return ordered
 }
 

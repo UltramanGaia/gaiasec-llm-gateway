@@ -300,7 +300,16 @@ func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte,
 	var lastErr error
 
 	for _, config := range orderedConfigs {
-		lease := getBackendRuntimeManager().startRequest(config, modelName)
+		lease, ok := getBackendRuntimeManager().startRequest(config, modelName)
+		if !ok {
+			attempts = append(attempts, providerAttempt{
+				ConfigID:     config.ID,
+				BackendModel: config.ModelName,
+				APIBaseURL:   config.APIBaseURL,
+				Error:        "max concurrency reached",
+			})
+			continue
+		}
 		attemptStart := time.Now()
 		resp, err := h.sendAnthropicRequest(headers, body, config, isStream)
 		attempt := providerAttempt{

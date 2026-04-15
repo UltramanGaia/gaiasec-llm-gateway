@@ -22,6 +22,15 @@ func NewModelConfigHandler(db *gorm.DB) *ModelConfigHandler {
 	}
 }
 
+func normalizeModelConfig(config *models.ModelConfig) {
+	if config.Priority < 0 {
+		config.Priority = 0
+	}
+	if config.MaxConcurrency < 0 {
+		config.MaxConcurrency = 0
+	}
+}
+
 func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Request) {
 	var config models.ModelConfig
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
@@ -29,6 +38,7 @@ func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	normalizeModelConfig(&config)
 	config.CreatedAt = time.Now()
 	config.UpdatedAt = time.Now()
 
@@ -105,26 +115,31 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	normalizeModelConfig(&input)
 	config.Name = input.Name
 	config.ModelName = input.ModelName
 	config.APIBaseURL = input.APIBaseURL
 	config.APIKey = input.APIKey
 	config.MaxTokens = input.MaxTokens
+	config.Priority = input.Priority
+	config.MaxConcurrency = input.MaxConcurrency
 	config.Temperature = input.Temperature
 	config.Description = input.Description
 	config.Enabled = input.Enabled
 	config.UpdatedAt = time.Now()
 
 	updates := map[string]any{
-		"name":         config.Name,
-		"model_name":   config.ModelName,
-		"api_base_url": config.APIBaseURL,
-		"api_key":      config.APIKey,
-		"max_tokens":   config.MaxTokens,
-		"temperature":  config.Temperature,
-		"description":  config.Description,
-		"enabled":      config.Enabled,
-		"updated_at":   config.UpdatedAt,
+		"name":            config.Name,
+		"model_name":      config.ModelName,
+		"api_base_url":    config.APIBaseURL,
+		"api_key":         config.APIKey,
+		"max_tokens":      config.MaxTokens,
+		"priority":        config.Priority,
+		"max_concurrency": config.MaxConcurrency,
+		"temperature":     config.Temperature,
+		"description":     config.Description,
+		"enabled":         config.Enabled,
+		"updated_at":      config.UpdatedAt,
 	}
 
 	if err := h.DB.Model(&config).Updates(updates).Error; err != nil {

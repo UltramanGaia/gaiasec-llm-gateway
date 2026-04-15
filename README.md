@@ -86,7 +86,7 @@ Create a model config with the following fields:
 - **Model Name**: The actual upstream model name
 - **API Base URL**: The upstream OpenAI-compatible base URL
 - **API Key**: The upstream credential
-- **Max Tokens / Temperature / Description / Enabled**: Optional runtime settings
+- **Priority / Max Tokens / Max Concurrency / Temperature / Description / Enabled**: Optional runtime settings. Lower `priority` is preferred first. `max_concurrency=0` means no limit.
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.

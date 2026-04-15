@@ -193,15 +193,21 @@ func TestBuildAttemptOrderPrefersLowerAdaptiveScore(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 
 	configs := []models.ModelConfig{
-		{ID: 1, Name: "auto-adaptive", ModelName: "slow-backend"},
-		{ID: 2, Name: "auto-adaptive", ModelName: "fast-backend"},
+		{ID: 1, Name: "auto-adaptive", ModelName: "slow-backend", Priority: 1},
+		{ID: 2, Name: "auto-adaptive", ModelName: "fast-backend", Priority: 1},
 	}
 
 	manager := getBackendRuntimeManager()
-	slowLease := manager.startRequest(configs[0], "auto-adaptive")
+	slowLease, ok := manager.startRequest(configs[0], "auto-adaptive")
+	if !ok {
+		t.Fatalf("expected slow backend lease to be acquired")
+	}
 	slowLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1500, FirstTokenLatency: 900, AvgTokenLatency: 120})
 
-	fastLease := manager.startRequest(configs[1], "auto-adaptive")
+	fastLease, ok := manager.startRequest(configs[1], "auto-adaptive")
+	if !ok {
+		t.Fatalf("expected fast backend lease to be acquired")
+	}
 	fastLease.Finish(backendObservation{Success: true, ResponseTimeMS: 300, FirstTokenLatency: 120, AvgTokenLatency: 25})
 
 	order := buildAttemptOrder("auto-adaptive", configs)
@@ -213,13 +219,80 @@ func TestBuildAttemptOrderPrefersLowerAdaptiveScore(t *testing.T) {
 	}
 }
 
+func TestBuildAttemptOrderPrefersLowerPriorityBeforeScore(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	configs := []models.ModelConfig{
+		{ID: 1, Name: "auto-priority", ModelName: "slower-high-priority", Priority: 0},
+		{ID: 2, Name: "auto-priority", ModelName: "faster-low-priority", Priority: 1},
+	}
+
+	manager := getBackendRuntimeManager()
+	slowLease, ok := manager.startRequest(configs[0], "auto-priority")
+	if !ok {
+		t.Fatalf("expected high-priority lease to be acquired")
+	}
+	slowLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1500, FirstTokenLatency: 900, AvgTokenLatency: 120})
+
+	fastLease, ok := manager.startRequest(configs[1], "auto-priority")
+	if !ok {
+		t.Fatalf("expected low-priority lease to be acquired")
+	}
+	fastLease.Finish(backendObservation{Success: true, ResponseTimeMS: 100, FirstTokenLatency: 50, AvgTokenLatency: 10})
+
+	order := buildAttemptOrder("auto-priority", configs)
+	if len(order) != 2 {
+		t.Fatalf("unexpected order length: %d", len(order))
+	}
+	if order[0].ID != 1 {
+		t.Fatalf("expected higher-priority backend first despite worse score, got %#v", order)
+	}
+}
+
+func TestBuildAttemptOrderScoresWithinSamePriorityGroup(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	configs := []models.ModelConfig{
+		{ID: 1, Name: "auto-priority-score", ModelName: "slow-backend", Priority: 0},
+		{ID: 2, Name: "auto-priority-score", ModelName: "fast-backend", Priority: 0},
+		{ID: 3, Name: "auto-priority-score", ModelName: "fallback-backend", Priority: 1},
+	}
+
+	manager := getBackendRuntimeManager()
+	slowLease, ok := manager.startRequest(configs[0], "auto-priority-score")
+	if !ok {
+		t.Fatalf("expected slow backend lease to be acquired")
+	}
+	slowLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1600, FirstTokenLatency: 950, AvgTokenLatency: 130})
+
+	fastLease, ok := manager.startRequest(configs[1], "auto-priority-score")
+	if !ok {
+		t.Fatalf("expected fast backend lease to be acquired")
+	}
+	fastLease.Finish(backendObservation{Success: true, ResponseTimeMS: 250, FirstTokenLatency: 110, AvgTokenLatency: 20})
+
+	order := buildAttemptOrder("auto-priority-score", configs)
+	if len(order) != 3 {
+		t.Fatalf("unexpected order length: %d", len(order))
+	}
+	if order[0].ID != 2 || order[1].ID != 1 {
+		t.Fatalf("expected same-priority backends ordered by score, got %#v", order)
+	}
+	if order[2].ID != 3 {
+		t.Fatalf("expected lower-priority backend last, got %#v", order)
+	}
+}
+
 func TestResetConfigStateClearsFailurePenalty(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 
 	config := models.ModelConfig{ID: 1, Name: "auto-reset", ModelName: "backend-a", APIBaseURL: "http://backend-a"}
 	manager := getBackendRuntimeManager()
 
-	lease := manager.startRequest(config, "auto-reset")
+	lease, ok := manager.startRequest(config, "auto-reset")
+	if !ok {
+		t.Fatalf("expected reset test lease to be acquired")
+	}
 	lease.Finish(backendObservation{Success: false, ResponseTimeMS: 800, FirstTokenLatency: 500, AvgTokenLatency: 100})
 
 	before := manager.snapshots()
@@ -260,5 +333,47 @@ func TestStreamMetricsTrackerComputesTTFTAndAverageTokenLatency(t *testing.T) {
 	}
 	if got := tracker.AvgTokenLatency(); got != 225 {
 		t.Fatalf("expected average token latency 225ms, got %f", got)
+	}
+}
+
+func TestBuildAttemptOrderSkipsBackendsAtMaxConcurrency(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	configs := []models.ModelConfig{
+		{ID: 1, Name: "auto-capacity", ModelName: "backend-a", MaxConcurrency: 1},
+		{ID: 2, Name: "auto-capacity", ModelName: "backend-b", MaxConcurrency: 2},
+	}
+
+	manager := getBackendRuntimeManager()
+	lease, ok := manager.startRequest(configs[0], "auto-capacity")
+	if !ok {
+		t.Fatalf("expected initial lease to be acquired")
+	}
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	order := buildAttemptOrder("auto-capacity", configs)
+	if len(order) != 1 {
+		t.Fatalf("expected only one backend with available capacity, got %d", len(order))
+	}
+	if order[0].ID != 2 {
+		t.Fatalf("expected unsaturated backend first, got %#v", order)
+	}
+}
+
+func TestStartRequestRejectsWhenMaxConcurrencyReached(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	manager := getBackendRuntimeManager()
+	config := models.ModelConfig{ID: 1, Name: "auto-capacity", ModelName: "backend-a", MaxConcurrency: 1}
+
+	firstLease, ok := manager.startRequest(config, "auto-capacity")
+	if !ok {
+		t.Fatalf("expected first request lease to be acquired")
+	}
+	defer firstLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	secondLease, ok := manager.startRequest(config, "auto-capacity")
+	if ok || secondLease != nil {
+		t.Fatalf("expected second request to be rejected at concurrency limit, got %#v / %v", secondLease, ok)
 	}
 }
