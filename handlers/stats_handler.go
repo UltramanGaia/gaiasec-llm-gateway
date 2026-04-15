@@ -24,27 +24,27 @@ func NewStatsHandler(db *gorm.DB) *StatsHandler {
 }
 
 type StatsResponse struct {
-	TotalRequests        int64   `json:"totalRequests"`
-	ActiveModels         int64   `json:"activeModels"`
-	ModelMappings        int64   `json:"modelMappings"`
-	AvgResponseTime      float64 `json:"avgResponseTime"`
-	AvgFirstTokenLatency float64 `json:"avgFirstTokenLatency"`
-	AvgTokenLatency      float64 `json:"avgTokenLatency"`
-	ActiveRequests       int     `json:"activeRequests"`
+	TotalRequests        int64   `json:"total_requests"`
+	ActiveModels         int64   `json:"active_models"`
+	ModelMappings        int64   `json:"model_mappings"`
+	AvgResponseTime      float64 `json:"avg_response_time"`
+	AvgFirstTokenLatency float64 `json:"avg_first_token_latency"`
+	AvgTokenLatency      float64 `json:"avg_token_latency"`
+	ActiveRequests       int     `json:"active_requests"`
 }
 
 type ModelStatsResponse struct {
-	ModelName            string  `json:"modelName"`
-	RequestCount         int64   `json:"requestCount"`
-	AvgResponseTime      float64 `json:"avgResponseTime"`
-	AvgFirstTokenLatency float64 `json:"avgFirstTokenLatency,omitempty"`
-	AvgTokenLatency      float64 `json:"avgTokenLatency,omitempty"`
-	ActiveRequests       int     `json:"activeRequests,omitempty"`
-	SuccessRate          float64 `json:"successRate,omitempty"`
-	BackendConfigID      uint    `json:"backendConfigId,omitempty"`
-	BackendModelName     string  `json:"backendModelName,omitempty"`
-	BackendAPIBaseURL    string  `json:"backendApiBaseUrl,omitempty"`
-	AdaptiveRoutingScore float64 `json:"adaptiveRoutingScore,omitempty"`
+	ModelName            string  `json:"model_name"`
+	RequestCount         int64   `json:"request_count"`
+	AvgResponseTime      float64 `json:"avg_response_time"`
+	AvgFirstTokenLatency float64 `json:"avg_first_token_latency,omitempty"`
+	AvgTokenLatency      float64 `json:"avg_token_latency,omitempty"`
+	ActiveRequests       int     `json:"active_requests,omitempty"`
+	SuccessRate          float64 `json:"success_rate,omitempty"`
+	BackendConfigID      uint    `json:"backend_config_id,omitempty"`
+	BackendModelName     string  `json:"backend_model_name,omitempty"`
+	BackendAPIBaseURL    string  `json:"backend_api_base_url,omitempty"`
+	AdaptiveRoutingScore float64 `json:"adaptive_routing_score,omitempty"`
 }
 
 type CachedStats struct {

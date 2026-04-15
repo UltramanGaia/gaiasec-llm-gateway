@@ -51,20 +51,20 @@ func (l *backendRequestLease) Finish(observation backendObservation) {
 }
 
 type backendRuntimeSnapshot struct {
-	ConfigID             uint    `json:"configId"`
-	ModelName            string  `json:"modelName"`
-	BackendModelName     string  `json:"backendModelName"`
-	BackendAPIBaseURL    string  `json:"backendApiBaseUrl"`
-	ActiveRequests       int     `json:"activeRequests"`
-	TotalRequests        int64   `json:"totalRequests"`
-	SuccessCount         int64   `json:"successCount"`
-	FailureCount         int64   `json:"failureCount"`
-	SuccessRate          float64 `json:"successRate"`
-	EWMAResponseTime     float64 `json:"ewmaResponseTime"`
-	EWMAFirstToken       float64 `json:"ewmaFirstTokenLatency"`
-	EWMAAvgTokenLatency  float64 `json:"ewmaAvgTokenLatency"`
-	AdaptiveRoutingScore float64 `json:"adaptiveRoutingScore"`
-	LastUpdatedAt        string  `json:"lastUpdatedAt,omitempty"`
+	ConfigID             uint    `json:"config_id"`
+	ModelName            string  `json:"model_name"`
+	BackendModelName     string  `json:"backend_model_name"`
+	BackendAPIBaseURL    string  `json:"backend_api_base_url"`
+	ActiveRequests       int     `json:"active_requests"`
+	TotalRequests        int64   `json:"total_requests"`
+	SuccessCount         int64   `json:"success_count"`
+	FailureCount         int64   `json:"failure_count"`
+	SuccessRate          float64 `json:"success_rate"`
+	EWMAResponseTime     float64 `json:"ewma_response_time"`
+	EWMAFirstToken       float64 `json:"ewma_first_token_latency"`
+	EWMAAvgTokenLatency  float64 `json:"ewma_avg_token_latency"`
+	AdaptiveRoutingScore float64 `json:"adaptive_routing_score"`
+	LastUpdatedAt        string  `json:"last_updated_at,omitempty"`
 }
 
 type backendRuntimeState struct {

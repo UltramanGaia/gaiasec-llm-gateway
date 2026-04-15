@@ -146,13 +146,13 @@ type ReplayRequest struct {
 
 // ReplayResponse 定义重放响应的结构
 type ReplayResponse struct {
-	OriginalRequest  string `json:"originalRequest"`
-	ModifiedRequest  string `json:"modifiedRequest"`
-	OriginalResponse string `json:"originalResponse"`
-	NewResponse      string `json:"newResponse"`
-	ModelName        string `json:"modelName"`
-	ActualModelName  string `json:"actualModelName"`
-	ResponseTime     int64  `json:"responseTime"`
+	OriginalRequest  string `json:"original_request"`
+	ModifiedRequest  string `json:"modified_request"`
+	OriginalResponse string `json:"original_response"`
+	NewResponse      string `json:"new_response"`
+	ModelName        string `json:"model_name"`
+	ActualModelName  string `json:"actual_model_name"`
+	ResponseTime     int64  `json:"response_time"`
 	Error            string `json:"error,omitempty"`
 }
 

@@ -229,8 +229,8 @@ func (h *ModelConfigHandler) ResetAllModelConfigRuntime(w http.ResponseWriter, r
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"success":    true,
-		"resetCount": resetCount,
-		"message":    "全部调度状态已重置",
+		"success":     true,
+		"reset_count": resetCount,
+		"message":     "全部调度状态已重置",
 	})
 }

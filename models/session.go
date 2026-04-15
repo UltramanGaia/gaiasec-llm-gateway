@@ -32,12 +32,12 @@ func (js *JSONSlice) Scan(value interface{}) error {
 
 type Session struct {
 	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	CreatedAt time.Time `gorm:"index" json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	ProjectID string    `gorm:"type:varchar(64)" json:"projectId"`
-	AgentID   string    `gorm:"type:varchar(36)" json:"agentId"`
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	ProjectID string    `gorm:"type:varchar(64)" json:"project_id"`
+	AgentID   string    `gorm:"type:varchar(36)" json:"agent_id"`
 	Engine    string    `gorm:"type:varchar(128)" json:"engine"`
-	SessionID string    `gorm:"uniqueIndex;type:varchar(64)" json:"sessionId"`
+	SessionID string    `gorm:"uniqueIndex;type:varchar(64)" json:"session_id"`
 	Events    JSONSlice `gorm:"type:longtext" json:"events"`
 }
 

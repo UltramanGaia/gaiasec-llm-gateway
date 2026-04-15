@@ -7,14 +7,14 @@ import (
 type ModelConfig struct {
 	ID          uint      `gorm:"primarykey" json:"id"`
 	Name        string    `gorm:"not null;type:varchar(255);index" json:"name"`
-	ModelName   string    `gorm:"not null;type:varchar(255)" json:"modelName"`
-	APIBaseURL  string    `gorm:"not null;type:varchar(500)" json:"apiBaseUrl"`
-	APIKey      string    `gorm:"not null;type:varchar(500)" json:"apiKey"`
-	MaxTokens   int       `gorm:"default:8192" json:"maxTokens"`
+	ModelName   string    `gorm:"not null;type:varchar(255)" json:"model_name"`
+	APIBaseURL  string    `gorm:"not null;type:varchar(500)" json:"api_base_url"`
+	APIKey      string    `gorm:"not null;type:varchar(500)" json:"api_key"`
+	MaxTokens   int       `gorm:"default:8192" json:"max_tokens"`
 	Temperature float64   `gorm:"default:0.7" json:"temperature"`
 	Description string    `gorm:"type:varchar(500)" json:"description"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 	Enabled     bool      `gorm:"default:true" json:"enabled"`
 }
 
