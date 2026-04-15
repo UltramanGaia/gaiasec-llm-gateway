@@ -127,14 +127,14 @@ func (w *AsyncLogWriter) writeBatch(logs []*models.RequestLog) {
 		return
 	}
 
-	log.WithError(err).WithField("batch_size", len(logs)).Warn("Failed to batch write logs, falling back to single inserts")
+	log.WithError(err).WithField("batch_size", len(logs)).Warn("Batch log write failed, falling back to single inserts")
 
 	for _, reqLog := range logs {
 		if reqLog == nil {
 			continue
 		}
 		if singleErr := w.db.Create(reqLog).Error; singleErr != nil {
-			log.WithError(singleErr).Error("Failed to write log")
+			log.WithError(singleErr).Error("Single log write failed")
 		}
 	}
 }
@@ -143,7 +143,7 @@ func (w *AsyncLogWriter) Write(reqLog *models.RequestLog) {
 	select {
 	case w.logChan <- &LogWriteRequest{Log: reqLog}:
 	default:
-		log.Warn("Log channel full, dropping log entry")
+		log.Warn("Async log queue full, dropping entry")
 	}
 }
 

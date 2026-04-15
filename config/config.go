@@ -10,6 +10,8 @@ type Config struct {
 	LogMaxCount     int64
 	LogKeepCount    int64
 	CleanupInterval time.Duration
+	LogLevel        string
+	LogFormat       string
 
 	ServerHost        string
 	ServerPort        int
@@ -33,6 +35,8 @@ func LoadConfig() *Config {
 		LogMaxCount:       getEnvAsInt64("LOG_MAX_COUNT", 100000),
 		LogKeepCount:      getEnvAsInt64("LOG_KEEP_COUNT", 50000),
 		CleanupInterval:   getEnvAsDuration("CLEANUP_INTERVAL", 1*time.Hour),
+		LogLevel:          getEnv("LOG_LEVEL", "info"),
+		LogFormat:         getEnv("LOG_FORMAT", "text"),
 		ServerHost:        getEnv("SERVER_HOST", "0.0.0.0"),
 		ServerPort:        getEnvAsInt("SERVER_PORT", 8090),
 		ReadTimeout:       getEnvAsSeconds("SERVER_READ_TIMEOUT_SECONDS", 30*time.Second),

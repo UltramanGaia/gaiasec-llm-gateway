@@ -30,16 +30,20 @@ func NewChatHandler(db *gorm.DB) *ChatHandler {
 
 func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	log.WithField("remote_addr", r.RemoteAddr).Info("New chat completion request received")
+	log.WithFields(log.Fields{
+		"type":        "request",
+		"endpoint":    "chat.completions",
+		"remote_addr": r.RemoteAddr,
+	}).Debug("Incoming request")
 
 	if h.handleCORS(w, r) {
-		log.Debug("CORS preflight request handled")
+		log.Debug("CORS preflight handled")
 		return
 	}
 
 	body, requestBody, modelName, _, isStream, err := h.parseRequest(r)
 	if err != nil {
-		log.WithError(err).Error("Failed to parse request")
+		log.WithError(err).Error("Request parse failed")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -72,7 +76,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	configs, err := h.getModelConfigs(modelName)
 	if err != nil {
-		log.WithError(err).WithField("model", modelName).Error("Model config not found")
+		log.WithError(err).WithField("model", modelName).Error("Model lookup failed")
 		http.Error(w, "Model not found: "+modelName, http.StatusNotFound)
 		return
 	}
@@ -82,7 +86,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		log.WithError(err).WithFields(log.Fields{
 			"model":    modelName,
 			"attempts": attempts,
-		}).Error("Failed to send request to provider")
+		}).Error("Provider dispatch failed")
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -102,7 +106,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 			"backend_model": selectedConfig.ModelName,
 			"backend_id":    selectedConfig.ID,
 			"attempts":      attempts,
-		}).Warn("Provider returned non-2xx status code after failover, skipping log")
+		}).Warn("Provider returned non-2xx, skipping request log")
 		for key, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)
@@ -126,7 +130,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		h.handleStreamResponse(w, resp, &reqLog, selectedConfig)
 	} else {
 		if err := h.handleNonStreamResponse(w, resp, &reqLog, selectedConfig); err != nil {
-			log.WithError(err).Error("Failed to handle non-stream response")
+			log.WithError(err).Error("Non-stream response handling failed")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -144,35 +148,39 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		"is_stream":     isStream,
 		"attempts":      attempts,
 		"elapsed_ms":    time.Since(startTime).Milliseconds(),
-	}).Info("Chat completion request completed")
+	}).Info("Chat completion served")
 }
 
 func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
-	log.WithField("remote_addr", r.RemoteAddr).Info("New Anthropic messages request received")
+	log.WithFields(log.Fields{
+		"type":        "request",
+		"endpoint":    "anthropic.messages",
+		"remote_addr": r.RemoteAddr,
+	}).Debug("Incoming request")
 
 	if h.handleCORS(w, r) {
-		log.Debug("CORS preflight request handled")
+		log.Debug("CORS preflight handled")
 		return
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.WithError(err).Error("Failed to read request body")
+		log.WithError(err).Error("Request body read failed")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var requestBody map[string]interface{}
 	if err := json.Unmarshal(body, &requestBody); err != nil {
-		log.WithError(err).Error("Failed to parse request body")
+		log.WithError(err).Error("Request JSON parse failed")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	modelName, ok := requestBody["model"].(string)
 	if !ok || modelName == "" {
-		log.Error("Model name is missing in Anthropic request")
+		log.Error("Anthropic request missing model")
 		http.Error(w, "Model name is required", http.StatusBadRequest)
 		return
 	}
@@ -210,7 +218,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 
 	configs, err := h.getModelConfigs(modelName)
 	if err != nil {
-		log.WithError(err).WithField("model", modelName).Error("Model config not found")
+		log.WithError(err).WithField("model", modelName).Error("Model lookup failed")
 		http.Error(w, "Model not found: "+modelName, http.StatusNotFound)
 		return
 	}
@@ -220,7 +228,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		log.WithError(err).WithFields(log.Fields{
 			"model":    modelName,
 			"attempts": attempts,
-		}).Error("Failed to send Anthropic request to provider")
+		}).Error("Anthropic provider dispatch failed")
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -239,7 +247,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 			"model":         modelName,
 			"backend_model": selectedConfig.ModelName,
 			"attempts":      attempts,
-		}).Warn("Provider returned non-2xx status code")
+		}).Warn("Provider returned non-2xx, skipping request log")
 		for key, values := range resp.Header {
 			for _, value := range values {
 				w.Header().Add(key, value)
@@ -263,7 +271,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		h.passthroughStreamResponse(w, resp, &reqLog)
 	} else {
 		if err := h.passthroughNonStreamResponse(w, resp, &reqLog); err != nil {
-			log.WithError(err).Error("Failed to handle Anthropic non-stream response")
+			log.WithError(err).Error("Anthropic non-stream response handling failed")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -281,7 +289,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		"is_stream":     isStream,
 		"attempts":      attempts,
 		"elapsed_ms":    time.Since(startTime).Milliseconds(),
-	}).Info("Anthropic messages request completed")
+	}).Info("Anthropic request served")
 }
 
 func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, *backendRequestLease, []providerAttempt, error) {
@@ -364,11 +372,11 @@ func (h *ChatHandler) sendAnthropicRequest(headers http.Header, body []byte, con
 		"model":       config.ModelName,
 		"is_stream":   isStream,
 		"body_length": len(body),
-	}).Info("Sending Anthropic request to provider")
+	}).Info("Dispatching Anthropic provider request")
 
 	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(body))
 	if err != nil {
-		log.WithError(err).WithField("url", providerURL).Error("Failed to create Anthropic HTTP request")
+		log.WithError(err).WithField("url", providerURL).Error("Anthropic request creation failed")
 		return nil, err
 	}
 
@@ -391,14 +399,14 @@ func (h *ChatHandler) sendAnthropicRequest(headers http.Header, body []byte, con
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.WithError(err).WithField("url", providerURL).Error("Failed to send Anthropic request")
+		log.WithError(err).WithField("url", providerURL).Error("Anthropic request failed")
 		return nil, err
 	}
 
 	log.WithFields(log.Fields{
 		"url":         providerURL,
 		"status_code": resp.StatusCode,
-	}).Info("Received Anthropic response")
+	}).Info("Anthropic response received")
 
 	return resp, nil
 }
@@ -412,8 +420,6 @@ func buildAnthropicMessagesURL(apiBaseURL string) string {
 }
 
 func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
-	log.Info("Starting passthrough stream response")
-
 	var contentBuilder strings.Builder
 	chunkCount := 0
 	metrics := newStreamMetricsTracker()
@@ -423,7 +429,7 @@ func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *htt
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.WithError(err).Error("Error reading passthrough stream")
+				log.WithError(err).Error("Passthrough stream read failed")
 			}
 			break
 		}
@@ -452,16 +458,14 @@ func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *htt
 }
 
 func (h *ChatHandler) passthroughNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {
-	log.Info("Starting passthrough non-stream response")
-
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.WithError(err).Error("Failed to read passthrough response body")
+		log.WithError(err).Error("Passthrough response read failed")
 		return err
 	}
 
 	if len(respBody) == 0 {
-		log.Warn("Passthrough response is empty")
+		log.Warn("Passthrough response empty")
 		return nil
 	}
 

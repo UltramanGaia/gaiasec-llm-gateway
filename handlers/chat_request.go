@@ -16,20 +16,20 @@ import (
 func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.RawMessage, string, string, bool, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.WithError(err).Error("Failed to read request body")
+		log.WithError(err).Error("Request body read failed")
 		return nil, nil, "", "", false, err
 	}
-	log.WithField("body_length", len(body)).Debug("Request body read successfully")
+	log.WithField("body_length", len(body)).Debug("Request body loaded")
 
 	var requestBody map[string]json.RawMessage
 	if err := json.Unmarshal(body, &requestBody); err != nil {
-		log.WithError(err).WithField("body", string(body)).Error("Failed to parse request body as JSON")
+		log.WithError(err).WithField("body", string(body)).Error("Request JSON parse failed")
 		return nil, nil, "", "", false, err
 	}
 
 	var modelName string
 	if rawModel, ok := requestBody["model"]; !ok || json.Unmarshal(rawModel, &modelName) != nil || modelName == "" {
-		log.Error("Model name is missing in request")
+		log.Error("Request missing model")
 		return nil, nil, "", "", false, errors.New("Model name is required")
 	}
 
@@ -46,7 +46,7 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.Raw
 		"model":     modelName,
 		"is_stream": isStream,
 		"has_token": userToken != "",
-	}).Info("Request parsed successfully")
+	}).Debug("Request parsed")
 
 	return body, requestBody, modelName, userToken, isStream, nil
 }
@@ -54,7 +54,7 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.Raw
 func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[string]json.RawMessage, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	updatedBody, err := buildProviderRequestBody(requestBody, config)
 	if err != nil {
-		log.WithError(err).Error("Failed to marshal request body for provider")
+		log.WithError(err).Error("Provider request build failed")
 		return nil, err
 	}
 
@@ -65,11 +65,11 @@ func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[s
 		"model":       config.ModelName,
 		"is_stream":   isStream,
 		"body_length": len(updatedBody),
-	}).Info("Sending request to LLM provider")
+	}).Info("Dispatching provider request")
 
 	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(updatedBody))
 	if err != nil {
-		log.WithError(err).WithField("url", providerURL).Error("Failed to create HTTP request for provider")
+		log.WithError(err).WithField("url", providerURL).Error("Provider request creation failed")
 		return nil, err
 	}
 
@@ -92,7 +92,7 @@ func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[s
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.WithError(err).WithField("url", providerURL).Error("Failed to send request to provider")
+		log.WithError(err).WithField("url", providerURL).Error("Provider request failed")
 		return nil, err
 	}
 
@@ -101,7 +101,7 @@ func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[s
 		"url":           providerURL,
 		"status_code":   resp.StatusCode,
 		"response_time": elapsed.Milliseconds(),
-	}).Info("Received response from LLM provider")
+	}).Info("Provider response received")
 
 	return resp, nil
 }

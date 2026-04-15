@@ -226,7 +226,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 		log.WithFields(log.Fields{
 			"model":    modelName,
 			"attempts": attempts,
-		}).Error("Failed to replay request against provider")
+		}).Error("Replay provider dispatch failed")
 		response := ReplayResponse{
 			OriginalRequest:  reqLog.Request,
 			ModifiedRequest:  string(modifiedRequestJSON),
@@ -324,7 +324,7 @@ func (h *LogHandler) processStreamResponse(resp *http.Response) string {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.Error("Error reading stream: " + err.Error())
+				log.WithError(err).Error("Replay stream read failed")
 			}
 			break
 		}

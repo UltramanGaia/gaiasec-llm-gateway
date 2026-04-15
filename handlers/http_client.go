@@ -15,13 +15,13 @@ var (
 )
 
 const (
-	upstreamRequestTimeout        = 120 * time.Second
-	upstreamDialTimeout           = 10 * time.Second
-	upstreamKeepAlive             = 30 * time.Second
-	upstreamTLSHandshakeTimeout   = 10 * time.Second
-	upstreamResponseHeaderTimeout = 30 * time.Second
-	upstreamExpectContinueTimeout = 1 * time.Second
-	upstreamIdleConnTimeout       = 90 * time.Second
+	upstreamRequestTimeout        = 600 * time.Second
+	upstreamDialTimeout           = 30 * time.Second
+	upstreamKeepAlive             = 60 * time.Second
+	upstreamTLSHandshakeTimeout   = 30 * time.Second
+	upstreamResponseHeaderTimeout = 600 * time.Second
+	upstreamExpectContinueTimeout = 10 * time.Second
+	upstreamIdleConnTimeout       = 300 * time.Second
 )
 
 func GetHTTPClient() *http.Client {

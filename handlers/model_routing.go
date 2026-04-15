@@ -42,23 +42,21 @@ var (
 )
 
 func (h *ChatHandler) getModelConfigs(modelName string) ([]models.ModelConfig, error) {
-	log.WithField("model", modelName).Info("Looking up model configs")
-
 	if configs, found := GetModelConfigsFromCache(modelName); found && len(configs) > 0 {
 		log.WithFields(log.Fields{
 			"model":        modelName,
 			"config_count": len(configs),
-		}).Info("Model configs found in cache")
+		}).Debug("Model configs cache hit")
 		return configs, nil
 	}
 
 	var configs []models.ModelConfig
 	if err := h.DB.Where("name = ? AND enabled = ?", modelName, true).Order("id ASC").Find(&configs).Error; err != nil {
-		log.WithError(err).WithField("model", modelName).Error("Failed to query model configs")
+		log.WithError(err).WithField("model", modelName).Error("Model config query failed")
 		return nil, err
 	}
 	if len(configs) == 0 {
-		log.WithField("model", modelName).Warn("Model config not found or disabled")
+		log.WithField("model", modelName).Warn("Model config not found")
 		return nil, gorm.ErrRecordNotFound
 	}
 
@@ -67,7 +65,7 @@ func (h *ChatHandler) getModelConfigs(modelName string) ([]models.ModelConfig, e
 	log.WithFields(log.Fields{
 		"model":        modelName,
 		"config_count": len(configs),
-	}).Info("Model configs found and cached")
+	}).Info("Model configs loaded")
 
 	return configs, nil
 }

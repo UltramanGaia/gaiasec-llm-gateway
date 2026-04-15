@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -45,9 +46,45 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(rw, r)
 
 		duration := time.Since(startTime)
-
-		log.Infof("Access: %s %s %d %d %s", r.Method, r.URL.Path, rw.statusCode, duration.Milliseconds(), r.UserAgent())
+		log.WithFields(log.Fields{
+			"type":        "access",
+			"method":      r.Method,
+			"path":        r.URL.Path,
+			"query":       r.URL.RawQuery,
+			"status":      rw.statusCode,
+			"duration_ms": duration.Milliseconds(),
+			"client_ip":   clientIPFromRequest(r),
+			"user_agent":  r.UserAgent(),
+		}).Info("HTTP request completed")
 	})
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+		value := strings.TrimSpace(r.Header.Get(header))
+		if value == "" {
+			continue
+		}
+		if header == "X-Forwarded-For" {
+			value = strings.TrimSpace(strings.Split(value, ",")[0])
+		}
+		if addr, err := netip.ParseAddr(value); err == nil {
+			return addr.String()
+		}
+	}
+
+	hostPort := strings.TrimSpace(r.RemoteAddr)
+	if hostPort == "" {
+		return ""
+	}
+	if addrPort, err := netip.ParseAddrPort(hostPort); err == nil {
+		return addrPort.Addr().String()
+	}
+	if addr, err := netip.ParseAddr(hostPort); err == nil {
+		return addr.String()
+	}
+
+	return hostPort
 }
 
 func initDB(cfg *config.Config) (*gorm.DB, error) {
@@ -125,6 +162,7 @@ func init() {
 
 func main() {
 	cfg := config.LoadConfig()
+	initLogger(cfg)
 
 	db, err := initDB(cfg)
 	if err != nil {
@@ -132,7 +170,11 @@ func main() {
 	}
 
 	models.StartLogCleanupTask(db, cfg.LogMaxCount, cfg.LogKeepCount, cfg.CleanupInterval)
-	log.Infof("Log cleanup task started: maxCount=%d, keepCount=%d, interval=%v", cfg.LogMaxCount, cfg.LogKeepCount, cfg.CleanupInterval)
+	log.WithFields(log.Fields{
+		"max_count":  cfg.LogMaxCount,
+		"keep_count": cfg.LogKeepCount,
+		"interval":   cfg.CleanupInterval,
+	}).Info("Request log cleanup task started")
 
 	listenHost := cfg.ServerHost
 	listenPort := cfg.ServerPort
@@ -308,7 +350,15 @@ func main() {
 	})
 
 	address := fmt.Sprintf("%s:%d", listenHost, listenPort)
-	log.Printf("Server starting on %s\n", address)
+	log.WithFields(log.Fields{
+		"address":        address,
+		"log_level":      cfg.LogLevel,
+		"log_format":     cfg.LogFormat,
+		"read_timeout":   cfg.ReadTimeout,
+		"write_timeout":  cfg.WriteTimeout,
+		"idle_timeout":   cfg.IdleTimeout,
+		"header_timeout": cfg.ReadHeaderTimeout,
+	}).Info("Server starting")
 
 	rateLimiter := NewRateLimiter(100, time.Minute)
 

@@ -15,13 +15,10 @@ import (
 )
 
 func (h *ChatHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
-	log.Info("Starting stream response handling")
 	h.handleOpenAIStreamResponse(w, resp, reqLog, config)
 }
 
 func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
-	log.Info("Starting OpenAI stream response handling")
-
 	var rawStream bytes.Buffer
 	chunkCount := 0
 	metrics := newStreamMetricsTracker()
@@ -30,7 +27,7 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.WithError(err).Error("Error reading stream")
+				log.WithError(err).Error("Stream read failed")
 			}
 			break
 		}
@@ -52,10 +49,10 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 	responseJSON, contentLength, reasoningLength, err := buildOpenAIStreamLogResponse(rawStream.String())
 	if err != nil {
 		if err == io.EOF {
-			log.WithField("chunks", chunkCount).Warn("Stream response has no content, skipping log")
+			log.WithField("chunks", chunkCount).Warn("Stream response empty, skipping log")
 			return
 		}
-		log.WithError(err).WithField("chunks", chunkCount).Warn("Failed to build structured stream log response")
+		log.WithError(err).WithField("chunks", chunkCount).Warn("Stream log payload build failed")
 		return
 	}
 
@@ -64,6 +61,7 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 		"chunks":           chunkCount,
 		"content_length":   contentLength,
 		"reasoning_length": reasoningLength,
+		"backend_model":    config.ModelName,
 	}).Info("Stream response completed")
 }
 
@@ -119,7 +117,7 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 		}
 
 		if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err != nil {
-			log.WithError(err).Debug("Skipping malformed stream chunk while building log response")
+			log.WithError(err).Debug("Skipping malformed stream chunk")
 			continue
 		}
 
@@ -225,28 +223,26 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 }
 
 func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
-	log.Info("Starting non-stream response handling")
-
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.WithError(err).Error("Failed to read response body from provider")
+		log.WithError(err).Error("Provider response read failed")
 		return err
 	}
 
-	log.WithField("response_length", len(respBody)).Debug("Response body read from provider")
+	log.WithField("response_length", len(respBody)).Debug("Provider response body loaded")
 
 	if len(respBody) == 0 {
-		log.Warn("Non-stream response is empty, skipping log")
+		log.Warn("Non-stream response empty, skipping log")
 		return nil
 	}
 
 	respBodyDecode, err := gzipDecode(respBody)
 	if err != nil {
 		reqLog.Response = string(respBody)
-		log.Debug("Response is not gzip encoded")
+		log.Debug("Provider response not gzip encoded")
 	} else {
 		reqLog.Response = string(respBodyDecode)
-		log.Debug("Response was gzip decoded")
+		log.Debug("Provider response gzip decoded")
 	}
 
 	w.Write(respBody)
@@ -254,7 +250,10 @@ func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.
 		reqLog.FirstTokenLatency = reqLog.ResponseTime
 	}
 
-	log.WithField("response_length", len(respBody)).Info("Non-stream response completed")
+	log.WithFields(log.Fields{
+		"response_length": len(respBody),
+		"backend_model":   config.ModelName,
+	}).Info("Non-stream response completed")
 	return nil
 }
 

@@ -44,9 +44,15 @@ func StartLogCleanupTask(db *gorm.DB, maxCount, keepCount int64, interval time.D
 			case <-ticker.C:
 				count, err := CleanupLogsByCount(db, maxCount, keepCount)
 				if err != nil {
-					log.Errorf("Failed to cleanup logs: %v", err)
+					log.WithError(err).WithFields(log.Fields{
+						"max_count":  maxCount,
+						"keep_count": keepCount,
+					}).Error("Request log cleanup failed")
 				} else if count > 0 {
-					log.Infof("Cleaned up %d log records (kept latest %d)", count, keepCount)
+					log.WithFields(log.Fields{
+						"removed_count": count,
+						"keep_count":    keepCount,
+					}).Info("Request log cleanup completed")
 				}
 			}
 		}
@@ -54,8 +60,14 @@ func StartLogCleanupTask(db *gorm.DB, maxCount, keepCount int64, interval time.D
 
 	count, err := CleanupLogsByCount(db, maxCount, keepCount)
 	if err != nil {
-		log.Errorf("Initial log cleanup failed: %v", err)
+		log.WithError(err).WithFields(log.Fields{
+			"max_count":  maxCount,
+			"keep_count": keepCount,
+		}).Error("Initial request log cleanup failed")
 	} else if count > 0 {
-		log.Infof("Initial cleanup: removed %d log records (kept latest %d)", count, keepCount)
+		log.WithFields(log.Fields{
+			"removed_count": count,
+			"keep_count":    keepCount,
+		}).Info("Initial request log cleanup completed")
 	}
 }
