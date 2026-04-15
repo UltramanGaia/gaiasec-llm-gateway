@@ -38,30 +38,30 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	query := h.DB
 
 	// Add filters based on query parameters
-	if model := r.URL.Query().Get("model"); model != "" {
+	if model := queryValue(r, "model"); model != "" {
 		query = query.Where("model_name = ?", model)
 	}
 
-	if backendConfigID := r.URL.Query().Get("backendConfigId"); backendConfigID != "" {
+	if backendConfigID := queryValue(r, "backend_config_id", "backendConfigId"); backendConfigID != "" {
 		query = query.Where("backend_config_id = ?", backendConfigID)
 	}
 
-	if backendModel := r.URL.Query().Get("backendModel"); backendModel != "" {
+	if backendModel := queryValue(r, "backend_model", "backendModel"); backendModel != "" {
 		query = query.Where("backend_model_name = ?", backendModel)
 	}
 
-	if userToken := r.URL.Query().Get("user_token"); userToken != "" {
+	if userToken := queryValue(r, "user_token", "userToken"); userToken != "" {
 		query = query.Where("user_token = ?", userToken)
 	}
 
 	// 添加日期范围过滤
-	if startDate := r.URL.Query().Get("startDate"); startDate != "" {
+	if startDate := queryValue(r, "start_date", "startDate"); startDate != "" {
 		if t, err := time.Parse(time.RFC3339, startDate); err == nil {
 			query = query.Where("created_at >= ?", t)
 		}
 	}
 
-	if endDate := r.URL.Query().Get("endDate"); endDate != "" {
+	if endDate := queryValue(r, "end_date", "endDate"); endDate != "" {
 		if t, err := time.Parse(time.RFC3339, endDate); err == nil {
 			query = query.Where("created_at <= ?", t)
 		}
@@ -71,13 +71,13 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	page := 1
 	pageSize := 10
 
-	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
+	if pageStr := queryValue(r, "page"); pageStr != "" {
 		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
 			page = p
 		}
 	}
 
-	if pageSizeStr := r.URL.Query().Get("pageSize"); pageSizeStr != "" {
+	if pageSizeStr := queryValue(r, "page_size", "pageSize", "size"); pageSizeStr != "" {
 		if ps, err := strconv.Atoi(pageSizeStr); err == nil && ps > 0 {
 			pageSize = ps
 		}
@@ -105,6 +105,16 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func queryValue(r *http.Request, names ...string) string {
+	values := r.URL.Query()
+	for _, name := range names {
+		if value := strings.TrimSpace(values.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // GetLogDetail 获取单个日志详情
