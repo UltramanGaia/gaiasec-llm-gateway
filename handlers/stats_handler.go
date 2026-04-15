@@ -58,6 +58,7 @@ var (
 	globalCachedStats  CachedStats
 	globalStatsCacheMu sync.RWMutex
 	statsCacheTTL      = 5 * time.Minute
+	statsTimeRange     = 1 * time.Hour // 统计时间范围：最近1小时
 )
 
 func InvalidateStatsCache() {
@@ -76,8 +77,13 @@ func (h *StatsHandler) startStatsCacheRefresh() {
 }
 
 func (h *StatsHandler) refreshStatsCache() {
+	// 计算时间范围
+	since := time.Now().Add(-statsTimeRange)
+
 	var totalRequests int64
-	h.DB.Model(&models.RequestLog{}).Count(&totalRequests)
+	h.DB.Model(&models.RequestLog{}).
+		Where("created_at >= ?", since).
+		Count(&totalRequests)
 
 	var activeModels int64
 	h.DB.Model(&models.ModelConfig{}).Where("enabled = ?", true).Count(&activeModels)
@@ -88,18 +94,19 @@ func (h *StatsHandler) refreshStatsCache() {
 	var avgResponseTime float64
 	h.DB.Model(&models.RequestLog{}).
 		Select("COALESCE(avg(response_time), 0)").
+		Where("created_at >= ?", since).
 		Scan(&avgResponseTime)
 
 	var avgFirstTokenLatency float64
 	h.DB.Model(&models.RequestLog{}).
 		Select("COALESCE(avg(first_token_latency), 0)").
-		Where("first_token_latency > 0").
+		Where("created_at >= ? AND first_token_latency > 0", since).
 		Scan(&avgFirstTokenLatency)
 
 	var avgTokenLatency float64
 	h.DB.Model(&models.RequestLog{}).
 		Select("COALESCE(avg(avg_token_latency), 0)").
-		Where("avg_token_latency > 0").
+		Where("created_at >= ? AND avg_token_latency > 0", since).
 		Scan(&avgTokenLatency)
 
 	if avgResponseTime == 0 {
@@ -131,6 +138,9 @@ func (h *StatsHandler) refreshStatsCache() {
 
 func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 	var providerStats []ModelStatsResponse
+	
+	// 计算时间范围
+	since := time.Now().Add(-statsTimeRange)
 
 	query := `
 		SELECT
@@ -144,12 +154,13 @@ func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 			COALESCE(AVG(NULLIF(rl.avg_token_latency, 0)), 0) as avg_token_latency
 		FROM request_logs rl
 		WHERE rl.backend_config_id > 0
+			AND rl.created_at >= ?
 		GROUP BY rl.model_name, rl.backend_config_id, rl.backend_model_name, rl.backend_api_base_url
 		ORDER BY request_count DESC
 		LIMIT 100
 	`
 
-	rows, err := h.DB.Raw(query).Rows()
+	rows, err := h.DB.Raw(query, since).Rows()
 	if err != nil {
 		return getDefaultProviderStats()
 	}
@@ -184,6 +195,9 @@ func (h *StatsHandler) getProviderStatsFromDB() []ModelStatsResponse {
 
 func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 	var modelStats []ModelStatsResponse
+	
+	// 计算时间范围
+	since := time.Now().Add(-statsTimeRange)
 
 	query := `
 		SELECT
@@ -193,12 +207,13 @@ func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 			COALESCE(AVG(NULLIF(rl.first_token_latency, 0)), 0) as avg_first_token_latency,
 			COALESCE(AVG(NULLIF(rl.avg_token_latency, 0)), 0) as avg_token_latency
 		FROM request_logs rl
+		WHERE rl.created_at >= ?
 		GROUP BY rl.model_name
 		ORDER BY request_count DESC
 		LIMIT 100
 	`
 
-	rows, err := h.DB.Raw(query).Rows()
+	rows, err := h.DB.Raw(query, since).Rows()
 	if err != nil {
 		return getDefaultModelStats()
 	}
@@ -246,8 +261,13 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	}
 	globalStatsCacheMu.RUnlock()
 
+	// 计算时间范围
+	since := time.Now().Add(-statsTimeRange)
+
 	var totalRequests int64
-	h.DB.Model(&models.RequestLog{}).Count(&totalRequests)
+	h.DB.Model(&models.RequestLog{}).
+		Where("created_at >= ?", since).
+		Count(&totalRequests)
 
 	var activeModels int64
 	h.DB.Model(&models.ModelConfig{}).Where("enabled = ?", true).Count(&activeModels)
@@ -258,18 +278,19 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	var avgResponseTime float64
 	h.DB.Model(&models.RequestLog{}).
 		Select("COALESCE(avg(response_time), 0)").
+		Where("created_at >= ?", since).
 		Scan(&avgResponseTime)
 
 	var avgFirstTokenLatency float64
 	h.DB.Model(&models.RequestLog{}).
 		Select("COALESCE(avg(first_token_latency), 0)").
-		Where("first_token_latency > 0").
+		Where("created_at >= ? AND first_token_latency > 0", since).
 		Scan(&avgFirstTokenLatency)
 
 	var avgTokenLatency float64
 	h.DB.Model(&models.RequestLog{}).
 		Select("COALESCE(avg(avg_token_latency), 0)").
-		Where("avg_token_latency > 0").
+		Where("created_at >= ? AND avg_token_latency > 0", since).
 		Scan(&avgTokenLatency)
 
 	if avgResponseTime == 0 {
