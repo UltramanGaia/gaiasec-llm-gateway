@@ -43,7 +43,7 @@ func LoadConfig() *Config {
 		ReadHeaderTimeout: getEnvAsSeconds("SERVER_READ_HEADER_TIMEOUT_SECONDS", 10*time.Second),
 		WriteTimeout:      getEnvAsSeconds("SERVER_WRITE_TIMEOUT_SECONDS", 0),
 		IdleTimeout:       getEnvAsSeconds("SERVER_IDLE_TIMEOUT_SECONDS", 120*time.Second),
-		DBHost:            getEnv("DB_HOST", "mysql.sothoth.svc.cluster.local"),
+		DBHost:            getEnv("DB_HOST", "gaiasec-mysql"),
 		DBPort:            getEnvAsInt("DB_PORT", 3306),
 		DBUser:            getEnv("DB_USER", "sa"),
 		DBPassword:        getEnv("DB_PASSWORD", "qq123456"),
