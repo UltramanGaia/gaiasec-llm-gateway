@@ -8,7 +8,6 @@ LLM Gateway is a Go service that aggregates multiple LLM API interfaces into a s
 2. **Model Configuration**: Stores named model configs used by the OpenAI-compatible entrypoints
 3. **Request Routing**: Routes requests to the appropriate upstream model endpoint based on config name
 4. **Logging**: Records all requests and responses for auditing and analysis
-5. **GaiaSec Control-Plane APIs**: Serves `/api/model-configs` and `/api/request-logs`
 
 ## Architecture
 ![LLM Gateway Architecture](https://i.imgur.com/placeholder.png)
@@ -76,7 +75,7 @@ curl http://localhost:8090/
 
 ### Compatibility Notes
 - Public GaiaSec deployment no longer exposes `/api/model-mappings` or `/api/providers`; `/api/model-configs` is the only supported AI configuration contract.
-- `/api/model-mappings` may still exist as an internal compatibility route in `llm-gateway`, but it is not part of the supported GaiaSec control-plane surface.
+- `/api/model-mappings` may still exist as an internal compatibility route in `llm-gateway`
 - `/api/logs` is retired at the GaiaSec gateway layer; use `/api/request-logs`.
 
 ## Configuration

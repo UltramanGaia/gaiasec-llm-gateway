@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	stdlog "log"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type responseWriterWrapper struct {
@@ -91,7 +94,16 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName)
 
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	gormLog := gormlogger.New(stdlog.New(os.Stdout, "\r\n", stdlog.LstdFlags), gormlogger.Config{
+		SlowThreshold:             200 * time.Millisecond,
+		LogLevel:                  gormlogger.Warn,
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  true,
+	})
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+		Logger: gormLog,
+	})
 	if err != nil {
 		return nil, err
 	}
