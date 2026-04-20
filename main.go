@@ -1,11 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	stdlog "log"
 	"net/http"
-	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -48,46 +48,51 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rw, r)
 
+		if rw.statusCode == 0 {
+			rw.statusCode = http.StatusOK
+		}
+		if shouldSkipAccessLog(r.URL.Path, rw.statusCode) {
+			return
+		}
+
 		duration := time.Since(startTime)
-		log.WithFields(log.Fields{
-			"type":        "access",
-			"method":      r.Method,
-			"path":        r.URL.Path,
-			"query":       r.URL.RawQuery,
-			"status":      rw.statusCode,
-			"duration_ms": duration.Milliseconds(),
-			"client_ip":   clientIPFromRequest(r),
-			"user_agent":  r.UserAgent(),
-		}).Info("HTTP request completed")
+		message := accessLogMessage(r, rw.statusCode, duration)
+		switch {
+		case rw.statusCode >= http.StatusInternalServerError:
+			log.Error(message)
+		case rw.statusCode >= http.StatusBadRequest:
+			log.Warn(message)
+		default:
+			log.Info(message)
+		}
 	})
 }
 
-func clientIPFromRequest(r *http.Request) string {
-	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
-		value := strings.TrimSpace(r.Header.Get(header))
-		if value == "" {
-			continue
-		}
-		if header == "X-Forwarded-For" {
-			value = strings.TrimSpace(strings.Split(value, ",")[0])
-		}
-		if addr, err := netip.ParseAddr(value); err == nil {
-			return addr.String()
-		}
+func shouldSkipAccessLog(path string, status int) bool {
+	if status >= http.StatusBadRequest {
+		return false
 	}
 
-	hostPort := strings.TrimSpace(r.RemoteAddr)
-	if hostPort == "" {
-		return ""
+	switch path {
+	case "/actuator/health", "/health", "/healthz":
+		return true
+	default:
+		return false
 	}
-	if addrPort, err := netip.ParseAddrPort(hostPort); err == nil {
-		return addrPort.Addr().String()
-	}
-	if addr, err := netip.ParseAddr(hostPort); err == nil {
-		return addr.String()
-	}
+}
 
-	return hostPort
+func accessLogMessage(r *http.Request, status int, duration time.Duration) string {
+	message := fmt.Sprintf(
+		"access %s %s status=%d duration=%dms",
+		r.Method,
+		r.URL.Path,
+		status,
+		duration.Milliseconds(),
+	)
+	if rawQuery := strings.TrimSpace(r.URL.RawQuery); rawQuery != "" {
+		message += fmt.Sprintf(" query=%q", rawQuery)
+	}
+	return message
 }
 
 func initDB(cfg *config.Config) (*gorm.DB, error) {
@@ -163,6 +168,40 @@ func removeLegacyModelConfigNameUniqueIndexes(db *gorm.DB) error {
 	return nil
 }
 
+func initDBWithRetry(cfg *config.Config) (*gorm.DB, error) {
+	var lastErr error
+	delay := 2 * time.Second
+
+	for attempt := 1; attempt <= 12; attempt++ {
+		db, err := initDB(cfg)
+		if err == nil {
+			if attempt > 1 {
+				log.WithField("attempt", attempt).Info("Database initialization recovered")
+			}
+			return db, nil
+		}
+
+		lastErr = err
+		if attempt == 12 {
+			break
+		}
+
+		log.WithFields(log.Fields{
+			"attempt":      attempt,
+			"retry_in_sec": int(delay / time.Second),
+		}).WithError(err).Warn("Database initialization failed, retrying")
+		time.Sleep(delay)
+		if delay < 10*time.Second {
+			delay *= 2
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("initialize database after retries: %w", lastErr)
+}
+
 var host string
 var port int
 
@@ -176,7 +215,7 @@ func main() {
 	cfg := config.LoadConfig()
 	initLogger(cfg)
 
-	db, err := initDB(cfg)
+	db, err := initDBWithRetry(cfg)
 	if err != nil {
 		log.Fatal("Failed to initialize database:", err)
 	}
@@ -385,7 +424,7 @@ func main() {
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
-	if err := server.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("Server failed to start:", err)
 	}
 }
