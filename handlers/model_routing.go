@@ -55,6 +55,22 @@ func (h *ChatHandler) getModelConfigs(modelName string) ([]models.ModelConfig, e
 		log.WithError(err).WithField("model", modelName).Error("Model config query failed")
 		return nil, err
 	}
+
+	valid := configs[:0]
+	for _, c := range configs {
+		if strings.TrimSpace(c.APIBaseURL) == "" || strings.TrimSpace(c.ModelName) == "" {
+			log.WithFields(log.Fields{
+				"model":        modelName,
+				"config_id":    c.ID,
+				"api_base_url": c.APIBaseURL,
+				"model_name":   c.ModelName,
+			}).Warn("Skipping model config with empty api_base_url or model_name")
+			continue
+		}
+		valid = append(valid, c)
+	}
+	configs = valid
+
 	if len(configs) == 0 {
 		log.WithField("model", modelName).Warn("Model config not found")
 		return nil, gorm.ErrRecordNotFound
@@ -92,13 +108,17 @@ func buildProviderRequestBody(requestBody map[string]json.RawMessage, config mod
 	if reasoningRaw, ok := requestBody["reasoning"]; ok && len(reasoningRaw) > 0 {
 		var reasoningCopy map[string]json.RawMessage
 		if err := json.Unmarshal(reasoningRaw, &reasoningCopy); err == nil {
-			if _, exists := reasoningCopy["effort"]; exists {
+			if original, exists := reasoningCopy["effort"]; exists {
 				reasoningCopy["effort"] = json.RawMessage(`"none"`)
 				updatedReasoning, err := json.Marshal(reasoningCopy)
 				if err != nil {
 					return nil, err
 				}
 				bodyCopy["reasoning"] = updatedReasoning
+				log.WithFields(log.Fields{
+					"original_effort": string(original),
+					"backend_model":   config.ModelName,
+				}).Debug("reasoning.effort overridden to none for backend")
 			}
 		}
 	}

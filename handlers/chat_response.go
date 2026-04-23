@@ -99,6 +99,7 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 	var firstCreated int64
 	var hasMetadata bool
 	var sawContent bool
+	var lastFinishReason string
 
 	scanner := bufio.NewScanner(strings.NewReader(rawStream))
 	// Raise the scanner ceiling to tolerate long SSE data lines.
@@ -140,6 +141,9 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 			reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
 			sawContent = true
 		}
+		if streamResponse.Choices[0].FinishReason != "" {
+			lastFinishReason = streamResponse.Choices[0].FinishReason
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -148,6 +152,11 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 
 	if !sawContent {
 		return "", 0, 0, io.EOF
+	}
+
+	finishReason := lastFinishReason
+	if finishReason == "" {
+		finishReason = "stop"
 	}
 
 	cachedResp := struct {
@@ -201,7 +210,7 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 					Content:          contentOnly.String(),
 					ReasoningContent: reasoningContentOnly.String(),
 				},
-				FinishReason: "stop",
+				FinishReason: finishReason,
 				Logprobs:     nil,
 			},
 		},

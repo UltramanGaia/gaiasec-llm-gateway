@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -16,9 +17,13 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
+
+//go:embed frontend/dist
+var frontendFS embed.FS
 
 type responseWriterWrapper struct {
 	http.ResponseWriter
@@ -96,9 +101,6 @@ func accessLogMessage(r *http.Request, status int, duration time.Duration) strin
 }
 
 func initDB(cfg *config.Config) (*gorm.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName)
-
 	gormLog := gormlogger.New(stdlog.New(os.Stdout, "\r\n", stdlog.LstdFlags), gormlogger.Config{
 		SlowThreshold:             200 * time.Millisecond,
 		LogLevel:                  gormlogger.Warn,
@@ -106,9 +108,16 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 		Colorful:                  true,
 	})
 
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: gormLog,
-	})
+	var dialector gorm.Dialector
+	if cfg.DBDriver == "mysql" {
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+			cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName)
+		dialector = mysql.Open(dsn)
+	} else {
+		dialector = sqlite.Open(cfg.DBPath)
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: gormLog})
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +148,10 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 }
 
 func removeLegacyModelConfigNameUniqueIndexes(db *gorm.DB) error {
+	// Only needed for MySQL deployments that may have an old unique index on name.
+	if db.Dialector.Name() != "mysql" {
+		return nil
+	}
 	type uniqueIndexRow struct {
 		IndexName string `gorm:"column:index_name"`
 	}
@@ -241,6 +254,11 @@ func main() {
 	modelConfigHandler := handlers.NewModelConfigHandler(db)
 	logHandler := handlers.NewLogHandler(db)
 	statsHandler := handlers.NewStatsHandler(db)
+
+	frontendHandler, err := handlers.NewFrontendHandler(frontendFS, "frontend/dist")
+	if err != nil {
+		log.Fatal("Failed to load frontend:", err)
+	}
 
 	mux := http.NewServeMux()
 
@@ -396,13 +414,13 @@ func main() {
 			http.Error(w, "API endpoint not found", http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte("ok"))
+		frontendHandler.ServeHTTP(w, r)
 	})
 
 	address := fmt.Sprintf("%s:%d", listenHost, listenPort)
 	log.WithFields(log.Fields{
 		"address":        address,
+		"db_driver":      cfg.DBDriver,
 		"log_level":      cfg.LogLevel,
 		"log_format":     cfg.LogFormat,
 		"read_timeout":   cfg.ReadTimeout,

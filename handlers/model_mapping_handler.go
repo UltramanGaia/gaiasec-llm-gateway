@@ -31,6 +31,22 @@ func normalizeModelConfig(config *models.ModelConfig) {
 	}
 }
 
+func validateModelConfig(config *models.ModelConfig) error {
+	if strings.TrimSpace(config.Name) == "" {
+		return errors.New("name is required")
+	}
+	if strings.TrimSpace(config.ModelName) == "" {
+		return errors.New("model_name is required")
+	}
+	if strings.TrimSpace(config.APIBaseURL) == "" {
+		return errors.New("api_base_url is required")
+	}
+	if !strings.HasPrefix(config.APIBaseURL, "http://") && !strings.HasPrefix(config.APIBaseURL, "https://") {
+		return errors.New("api_base_url must start with http:// or https://")
+	}
+	return nil
+}
+
 func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Request) {
 	var config models.ModelConfig
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
@@ -39,6 +55,10 @@ func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Re
 	}
 
 	normalizeModelConfig(&config)
+	if err := validateModelConfig(&config); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	config.CreatedAt = time.Now()
 	config.UpdatedAt = time.Now()
 
@@ -116,6 +136,10 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 	}
 
 	normalizeModelConfig(&input)
+	if err := validateModelConfig(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	config.Name = input.Name
 	config.ModelName = input.ModelName
 	config.APIBaseURL = input.APIBaseURL

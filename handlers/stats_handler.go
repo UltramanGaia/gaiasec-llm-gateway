@@ -235,19 +235,11 @@ func (h *StatsHandler) getModelStatsFromDB() []ModelStatsResponse {
 }
 
 func getDefaultProviderStats() []ModelStatsResponse {
-	return []ModelStatsResponse{
-		{ModelName: "auto", BackendModelName: "backend-a", RequestCount: 153, AvgResponseTime: 185, AvgFirstTokenLatency: 92, AvgTokenLatency: 36},
-		{ModelName: "qwen3:30b", BackendModelName: "backend-b", RequestCount: 87, AvgResponseTime: 210, AvgFirstTokenLatency: 103, AvgTokenLatency: 42},
-		{ModelName: "deepseek-chat", BackendModelName: "backend-c", RequestCount: 64, AvgResponseTime: 176, AvgFirstTokenLatency: 88, AvgTokenLatency: 31},
-	}
+	return []ModelStatsResponse{}
 }
 
 func getDefaultModelStats() []ModelStatsResponse {
-	return []ModelStatsResponse{
-		{ModelName: "auto", RequestCount: 98, AvgResponseTime: 150, AvgFirstTokenLatency: 84, AvgTokenLatency: 29},
-		{ModelName: "qwen3:30b", RequestCount: 76, AvgResponseTime: 195, AvgFirstTokenLatency: 97, AvgTokenLatency: 35},
-		{ModelName: "deepseek-chat", RequestCount: 45, AvgResponseTime: 165, AvgFirstTokenLatency: 79, AvgTokenLatency: 27},
-	}
+	return []ModelStatsResponse{}
 }
 
 func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {

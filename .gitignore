@@ -9,3 +9,6 @@
 build/bin
 
 llm-gateway
+
+node_modules
+dist

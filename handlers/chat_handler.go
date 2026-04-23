@@ -131,12 +131,11 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if err := h.handleNonStreamResponse(w, resp, &reqLog, selectedConfig); err != nil {
 			log.WithError(err).Error("Non-stream response handling failed")
-			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if reqLog.Response != "" {
+	if reqLog.Response != "" || len(reqLog.StreamResponse) > 0 {
 		shouldLog = true
 	}
 	requestSucceeded = true

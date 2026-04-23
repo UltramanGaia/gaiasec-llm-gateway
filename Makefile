@@ -13,6 +13,7 @@ pull:
 commit:
 	test -z "$$(git status --short)" || opencode run 'git commit it'
 build:
+	cd frontend && npm run build
 	CGO_ENABLED=0 GOOS=linux go build -o llm-gateway .
 	docker build -t $(LOCAL_IMAGE) . -f Dockerfile_local
 	docker tag $(LOCAL_IMAGE) $(REMOTE_IMAGE)

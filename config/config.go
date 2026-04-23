@@ -25,6 +25,8 @@ type Config struct {
 	DBUser           string
 	DBPassword       string
 	DBName           string
+	DBDriver         string
+	DBPath           string
 	SessionServerKey string
 }
 
@@ -48,6 +50,8 @@ func LoadConfig() *Config {
 		DBUser:            getEnv("DB_USER", "sa"),
 		DBPassword:        getEnv("DB_PASSWORD", "qq123456"),
 		DBName:            getEnv("DB_NAME", "gaiasec"),
+		DBDriver:          getEnv("DB_DRIVER", "sqlite"),
+		DBPath:            getEnv("DB_PATH", "./llm-gateway.db"),
 		SessionServerKey:  getEnv("SESSION_SERVER_KEY", ""),
 	}
 
