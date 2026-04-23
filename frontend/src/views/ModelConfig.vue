@@ -173,7 +173,13 @@
             <el-input v-model="form.apiBaseUrl" placeholder="请输入API地址" />
           </el-form-item>
           <el-form-item label="API密钥">
-            <el-input v-model="form.apiKey" type="password" placeholder="请输入API密钥" show-password />
+            <el-input
+              v-model="form.apiKey"
+              type="password"
+              :placeholder="editingConfig ? '留空则保持现有API密钥' : '请输入API密钥'"
+              show-password
+            />
+            <span v-if="editingConfig?.apiKeySet" style="margin-left:12px; font-size:12px; color:var(--el-text-color-secondary);">当前已配置 API 密钥，留空则保持不变</span>
           </el-form-item>
           <el-form-item label="最大Token数">
             <el-input-number v-model="form.maxTokens" :min="1" :max="100000" />
@@ -269,7 +275,8 @@ const normalizeModelConfig = (config = {}) => ({
   name: config.name ?? '',
   modelName: config.modelName ?? config.model_name ?? '',
   apiBaseUrl: config.apiBaseUrl ?? config.api_base_url ?? '',
-  apiKey: config.apiKey ?? config.api_key ?? '',
+  apiKey: '',
+  apiKeySet: config.apiKeySet ?? config.api_key_set ?? false,
   maxTokens: config.maxTokens ?? config.max_tokens ?? 8192,
   priority: config.priority ?? 0,
   maxConcurrency: config.maxConcurrency ?? config.max_concurrency ?? 0,
@@ -334,7 +341,7 @@ const refreshData = () => { loadData(); ElMessage.success('数据已刷新'); };
 
 const handleEdit = (config) => {
   editingConfig.value = config;
-  form.value = normalizeModelConfig(config);
+  form.value = { ...normalizeModelConfig(config), apiKey: '' };
   showAddDialog.value = true;
 };
 
@@ -379,7 +386,6 @@ const handleSubmit = async () => {
       name: form.value.name,
       model_name: form.value.modelName,
       api_base_url: form.value.apiBaseUrl,
-      api_key: form.value.apiKey,
       max_tokens: form.value.maxTokens,
       priority: form.value.priority,
       max_concurrency: form.value.maxConcurrency,
@@ -387,6 +393,9 @@ const handleSubmit = async () => {
       description: form.value.description,
       enabled: form.value.enabled,
     };
+    if (!editingConfig.value || form.value.apiKey) {
+      payload.api_key = form.value.apiKey;
+    }
     if (editingConfig.value) {
       await api.put(`/model-configs/${editingConfig.value.id}`, payload);
       ElMessage.success('更新成功');

@@ -16,10 +16,52 @@ type ModelConfigHandler struct {
 	DB *gorm.DB
 }
 
+type modelConfigResponse struct {
+	ID             uint      `json:"id"`
+	Name           string    `json:"name"`
+	ModelName      string    `json:"model_name"`
+	APIBaseURL     string    `json:"api_base_url"`
+	APIKeySet      bool      `json:"api_key_set"`
+	MaxTokens      int       `json:"max_tokens"`
+	Priority       int       `json:"priority"`
+	MaxConcurrency int       `json:"max_concurrency"`
+	Temperature    float64   `json:"temperature"`
+	Description    string    `json:"description"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Enabled        bool      `json:"enabled"`
+}
+
 func NewModelConfigHandler(db *gorm.DB) *ModelConfigHandler {
 	return &ModelConfigHandler{
 		DB: db,
 	}
+}
+
+func toModelConfigResponse(config models.ModelConfig) modelConfigResponse {
+	return modelConfigResponse{
+		ID:             config.ID,
+		Name:           config.Name,
+		ModelName:      config.ModelName,
+		APIBaseURL:     config.APIBaseURL,
+		APIKeySet:      strings.TrimSpace(config.APIKey) != "",
+		MaxTokens:      config.MaxTokens,
+		Priority:       config.Priority,
+		MaxConcurrency: config.MaxConcurrency,
+		Temperature:    config.Temperature,
+		Description:    config.Description,
+		CreatedAt:      config.CreatedAt,
+		UpdatedAt:      config.UpdatedAt,
+		Enabled:        config.Enabled,
+	}
+}
+
+func toModelConfigResponses(configs []models.ModelConfig) []modelConfigResponse {
+	responses := make([]modelConfigResponse, 0, len(configs))
+	for _, config := range configs {
+		responses = append(responses, toModelConfigResponse(config))
+	}
+	return responses
 }
 
 func normalizeModelConfig(config *models.ModelConfig) {
@@ -70,7 +112,7 @@ func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Re
 	InvalidateAllModelConfigCache()
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(config)
+	json.NewEncoder(w).Encode(toModelConfigResponse(config))
 }
 
 func (h *ModelConfigHandler) GetModelConfigs(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +122,7 @@ func (h *ModelConfigHandler) GetModelConfigs(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(configs)
+	json.NewEncoder(w).Encode(toModelConfigResponses(configs))
 }
 
 func (h *ModelConfigHandler) GetEnabledModelConfigs(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +132,7 @@ func (h *ModelConfigHandler) GetEnabledModelConfigs(w http.ResponseWriter, r *ht
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(configs)
+	json.NewEncoder(w).Encode(toModelConfigResponses(configs))
 }
 
 func (h *ModelConfigHandler) GetModelConfig(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +151,7 @@ func (h *ModelConfigHandler) GetModelConfig(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(config)
+	json.NewEncoder(w).Encode(toModelConfigResponse(config))
 }
 
 func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +185,9 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 	config.Name = input.Name
 	config.ModelName = input.ModelName
 	config.APIBaseURL = input.APIBaseURL
-	config.APIKey = input.APIKey
+	if strings.TrimSpace(input.APIKey) != "" {
+		config.APIKey = input.APIKey
+	}
 	config.MaxTokens = input.MaxTokens
 	config.Priority = input.Priority
 	config.MaxConcurrency = input.MaxConcurrency
@@ -156,7 +200,6 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 		"name":            config.Name,
 		"model_name":      config.ModelName,
 		"api_base_url":    config.APIBaseURL,
-		"api_key":         config.APIKey,
 		"max_tokens":      config.MaxTokens,
 		"priority":        config.Priority,
 		"max_concurrency": config.MaxConcurrency,
@@ -164,6 +207,9 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 		"description":     config.Description,
 		"enabled":         config.Enabled,
 		"updated_at":      config.UpdatedAt,
+	}
+	if strings.TrimSpace(input.APIKey) != "" {
+		updates["api_key"] = config.APIKey
 	}
 
 	if err := h.DB.Model(&config).Updates(updates).Error; err != nil {
@@ -179,7 +225,7 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 	InvalidateAllModelConfigCache()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(config)
+	json.NewEncoder(w).Encode(toModelConfigResponse(config))
 }
 
 func (h *ModelConfigHandler) DeleteModelConfig(w http.ResponseWriter, r *http.Request) {
