@@ -31,6 +31,7 @@ type StatsResponse struct {
 	AvgFirstTokenLatency float64 `json:"avg_first_token_latency"`
 	AvgTokenLatency      float64 `json:"avg_token_latency"`
 	ActiveRequests       int     `json:"active_requests"`
+	WaitingRequests      int     `json:"waiting_requests"`
 }
 
 type ModelStatsResponse struct {
@@ -40,6 +41,7 @@ type ModelStatsResponse struct {
 	AvgFirstTokenLatency float64 `json:"avg_first_token_latency,omitempty"`
 	AvgTokenLatency      float64 `json:"avg_token_latency,omitempty"`
 	ActiveRequests       int     `json:"active_requests,omitempty"`
+	WaitingRequests      int     `json:"waiting_requests,omitempty"`
 	SuccessRate          float64 `json:"success_rate,omitempty"`
 	BackendConfigID      uint    `json:"backend_config_id,omitempty"`
 	BackendModelName     string  `json:"backend_model_name,omitempty"`
@@ -121,6 +123,7 @@ func (h *StatsHandler) refreshStatsCache() {
 		AvgFirstTokenLatency: avgFirstTokenLatency,
 		AvgTokenLatency:      avgTokenLatency,
 		ActiveRequests:       totalActiveRequests(),
+		WaitingRequests:      totalWaitingRequests(),
 	}
 
 	providerStats := h.getProviderStatsFromDB()
@@ -297,6 +300,7 @@ func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		AvgFirstTokenLatency: avgFirstTokenLatency,
 		AvgTokenLatency:      avgTokenLatency,
 		ActiveRequests:       totalActiveRequests(),
+		WaitingRequests:      totalWaitingRequests(),
 	}
 
 	globalStatsCacheMu.Lock()
@@ -363,6 +367,7 @@ func enrichProviderStatWithRuntime(stat *ModelStatsResponse) {
 			continue
 		}
 		stat.ActiveRequests = snapshot.ActiveRequests
+		stat.WaitingRequests = snapshot.WaitingRequests
 		stat.SuccessRate = snapshot.SuccessRate
 		stat.AdaptiveRoutingScore = snapshot.AdaptiveRoutingScore
 		if stat.BackendModelName == "" {
@@ -383,6 +388,7 @@ func refreshProviderStatsRuntime(stats []ModelStatsResponse) []ModelStatsRespons
 				continue
 			}
 			stats[i].ActiveRequests = snapshot.ActiveRequests
+			stats[i].WaitingRequests = snapshot.WaitingRequests
 			break
 		}
 	}
@@ -408,6 +414,7 @@ func mergeRuntimeProviderStats(stats []ModelStatsResponse) []ModelStatsResponse 
 			AvgFirstTokenLatency: snapshot.EWMAFirstToken,
 			AvgTokenLatency:      snapshot.EWMAAvgTokenLatency,
 			ActiveRequests:       snapshot.ActiveRequests,
+			WaitingRequests:      snapshot.WaitingRequests,
 			SuccessRate:          snapshot.SuccessRate,
 			BackendConfigID:      snapshot.ConfigID,
 			BackendModelName:     snapshot.BackendModelName,
@@ -423,6 +430,19 @@ func totalActiveRequests() int {
 	total := 0
 	for _, snapshot := range getBackendRuntimeManager().snapshots() {
 		total += snapshot.ActiveRequests
+	}
+	return total
+}
+
+func totalWaitingRequests() int {
+	totalByModel := make(map[string]int)
+	for _, snapshot := range getBackendRuntimeManager().snapshots() {
+		totalByModel[snapshot.ModelName] = snapshot.WaitingRequests
+	}
+
+	total := 0
+	for _, waiting := range totalByModel {
+		total += waiting
 	}
 	return total
 }

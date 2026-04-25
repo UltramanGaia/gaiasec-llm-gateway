@@ -56,6 +56,7 @@ type backendRuntimeSnapshot struct {
 	BackendModelName     string  `json:"backend_model_name"`
 	BackendAPIBaseURL    string  `json:"backend_api_base_url"`
 	ActiveRequests       int     `json:"active_requests"`
+	WaitingRequests      int     `json:"waiting_requests"`
 	TotalRequests        int64   `json:"total_requests"`
 	SuccessCount         int64   `json:"success_count"`
 	FailureCount         int64   `json:"failure_count"`
@@ -89,15 +90,17 @@ type rankedBackendConfig struct {
 }
 
 type backendRuntimeManager struct {
-	mu     sync.RWMutex
-	states map[uint]*backendRuntimeState
+	mu             sync.RWMutex
+	states         map[uint]*backendRuntimeState
+	waitingByModel map[string]int
 }
 
 var globalBackendRuntime = newBackendRuntimeManager()
 
 func newBackendRuntimeManager() *backendRuntimeManager {
 	return &backendRuntimeManager{
-		states: make(map[uint]*backendRuntimeState),
+		states:         make(map[uint]*backendRuntimeState),
+		waitingByModel: make(map[string]int),
 	}
 }
 
@@ -216,6 +219,24 @@ func (m *backendRuntimeManager) finishRequest(lease *backendRequestLease, observ
 	if observation.AvgTokenLatency > 0 {
 		state.EWMAAvgTokenLatency = ewma(state.EWMAAvgTokenLatency, observation.AvgTokenLatency)
 	}
+}
+
+func (m *backendRuntimeManager) beginWait(publicModelName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.waitingByModel[publicModelName]++
+}
+
+func (m *backendRuntimeManager) endWait(publicModelName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.waitingByModel[publicModelName] <= 1 {
+		delete(m.waitingByModel, publicModelName)
+		return
+	}
+	m.waitingByModel[publicModelName]--
 }
 
 func (m *backendRuntimeManager) getOrCreateStateLocked(config models.ModelConfig, publicModelName string) *backendRuntimeState {
@@ -388,6 +409,7 @@ func (m *backendRuntimeManager) snapshots() []backendRuntimeSnapshot {
 			BackendModelName:     state.BackendModelName,
 			BackendAPIBaseURL:    state.BackendAPIBaseURL,
 			ActiveRequests:       state.ActiveRequests,
+			WaitingRequests:      m.waitingByModel[state.ModelName],
 			TotalRequests:        state.TotalRequests,
 			SuccessCount:         state.SuccessCount,
 			FailureCount:         state.FailureCount,

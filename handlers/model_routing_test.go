@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,7 +157,7 @@ func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
 		},
 	})
 
-	resp, selectedConfig, lease, attempts, err := handler.dispatchProviderRequest(http.Header{"X-Test": []string{"1"}}, requestBody, "auto-failover", configs, false)
+	resp, selectedConfig, lease, attempts, err := handler.dispatchProviderRequest(context.Background(), http.Header{"X-Test": []string{"1"}}, requestBody, "auto-failover", configs, false)
 	if err != nil {
 		t.Fatalf("dispatchProviderRequest returned error: %v", err)
 	}
@@ -375,5 +377,127 @@ func TestStartRequestRejectsWhenMaxConcurrencyReached(t *testing.T) {
 	secondLease, ok := manager.startRequest(config, "auto-capacity")
 	if ok || secondLease != nil {
 		t.Fatalf("expected second request to be rejected at concurrency limit, got %#v / %v", secondLease, ok)
+	}
+}
+
+func TestDispatchProviderRequestWaitsForBackendCapacity(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	originalRetryInterval := backendCapacityRetryInterval
+	defer func() {
+		backendCapacityRetryInterval = originalRetryInterval
+	}()
+	backendCapacityRetryInterval = 5 * time.Millisecond
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer provider.Close()
+
+	handler := &ChatHandler{}
+	config := models.ModelConfig{
+		ID:             1,
+		Name:           "auto-capacity",
+		ModelName:      "backend-a",
+		APIBaseURL:     provider.URL,
+		MaxConcurrency: 1,
+	}
+
+	firstLease, ok := getBackendRuntimeManager().startRequest(config, "auto-capacity")
+	if !ok {
+		t.Fatalf("expected initial lease to be acquired")
+	}
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		firstLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+	}()
+
+	requestBody := mustRawMessageMap(t, map[string]interface{}{
+		"model":    "auto-capacity",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	resp, selectedConfig, lease, attempts, err := handler.dispatchProviderRequest(ctx, http.Header{}, requestBody, "auto-capacity", []models.ModelConfig{config}, false)
+	if err != nil {
+		t.Fatalf("dispatchProviderRequest returned error after capacity was released: %v", err)
+	}
+	defer resp.Body.Close()
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	if selectedConfig.ID != config.ID {
+		t.Fatalf("expected selected backend %d, got %d", config.ID, selectedConfig.ID)
+	}
+	if len(attempts) != 1 || attempts[0].StatusCode != http.StatusOK {
+		t.Fatalf("expected successful provider attempt, got %#v", attempts)
+	}
+}
+
+func TestDispatchProviderRequestStopsWaitingWhenContextIsCanceled(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	originalRetryInterval := backendCapacityRetryInterval
+	defer func() {
+		backendCapacityRetryInterval = originalRetryInterval
+	}()
+	backendCapacityRetryInterval = 5 * time.Millisecond
+
+	handler := &ChatHandler{}
+	config := models.ModelConfig{
+		ID:             1,
+		Name:           "auto-capacity",
+		ModelName:      "backend-a",
+		APIBaseURL:     "http://example.invalid",
+		MaxConcurrency: 1,
+	}
+
+	firstLease, ok := getBackendRuntimeManager().startRequest(config, "auto-capacity")
+	if !ok {
+		t.Fatalf("expected initial lease to be acquired")
+	}
+	defer firstLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	requestBody := mustRawMessageMap(t, map[string]interface{}{
+		"model":    "auto-capacity",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _, lease, _, err := handler.dispatchProviderRequest(ctx, http.Header{}, requestBody, "auto-capacity", []models.ModelConfig{config}, false)
+	if err == nil {
+		t.Fatalf("expected context timeout error while backend capacity stayed full")
+	}
+	if lease != nil {
+		t.Fatalf("expected no lease on timeout, got %#v", lease)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+}
+
+func TestBackendRuntimeSnapshotsExposeWaitingRequests(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	manager := getBackendRuntimeManager()
+	config := models.ModelConfig{ID: 1, Name: "auto-capacity", ModelName: "backend-a"}
+	lease, ok := manager.startRequest(config, "auto-capacity")
+	if !ok {
+		t.Fatalf("expected request lease to be acquired")
+	}
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	manager.beginWait("auto-capacity")
+	defer manager.endWait("auto-capacity")
+
+	snapshots := manager.snapshots()
+	if len(snapshots) != 1 {
+		t.Fatalf("expected one runtime snapshot, got %d", len(snapshots))
+	}
+	if snapshots[0].WaitingRequests != 1 {
+		t.Fatalf("expected one waiting request, got %#v", snapshots[0])
 	}
 }

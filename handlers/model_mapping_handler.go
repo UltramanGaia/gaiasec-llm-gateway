@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +19,8 @@ import (
 type ModelConfigHandler struct {
 	DB *gorm.DB
 }
+
+const modelConfigConnectionTestTimeout = 2 * time.Minute
 
 type modelConfigResponse struct {
 	ID             uint      `json:"id"`
@@ -87,6 +93,107 @@ func validateModelConfig(config *models.ModelConfig) error {
 		return errors.New("api_base_url must start with http:// or https://")
 	}
 	return nil
+}
+
+type modelConfigConnectionTestResult struct {
+	Success bool           `json:"success"`
+	Message string         `json:"message"`
+	Input   map[string]any `json:"input"`
+	Output  map[string]any `json:"output"`
+}
+
+func testModelConfigConnection(ctx context.Context, config models.ModelConfig) modelConfigConnectionTestResult {
+	input := map[string]any{
+		"method": "POST",
+		"url":    buildProviderChatURL(config.APIBaseURL),
+		"headers": map[string]string{
+			"Content-Type": "application/json",
+		},
+	}
+	if strings.TrimSpace(config.APIKey) != "" {
+		input["headers"].(map[string]string)["Authorization"] = "Bearer ***"
+	}
+
+	if strings.TrimSpace(config.APIBaseURL) == "" {
+		return modelConfigConnectionTestResult{Success: false, Message: "api_base_url is required", Input: input, Output: map[string]any{"error": "api_base_url is required"}}
+	}
+	if strings.TrimSpace(config.ModelName) == "" {
+		return modelConfigConnectionTestResult{Success: false, Message: "model_name is required", Input: input, Output: map[string]any{"error": "model_name is required"}}
+	}
+
+	requestPayload := map[string]any{
+		"model": config.ModelName,
+		"messages": []map[string]string{
+			{"role": "user", "content": "ping"},
+		},
+		"max_tokens":  1,
+		"temperature": 0,
+		"stream":      false,
+	}
+	input["body"] = requestPayload
+
+	body, err := json.Marshal(requestPayload)
+	if err != nil {
+		return modelConfigConnectionTestResult{Success: false, Message: err.Error(), Input: input, Output: map[string]any{"error": err.Error()}}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildProviderChatURL(config.APIBaseURL), bytes.NewReader(body))
+	if err != nil {
+		return modelConfigConnectionTestResult{Success: false, Message: err.Error(), Input: input, Output: map[string]any{"error": err.Error()}}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(config.APIKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	}
+
+	startedAt := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	duration := time.Since(startedAt)
+	if err != nil {
+		return modelConfigConnectionTestResult{
+			Success: false,
+			Message: err.Error(),
+			Input:   input,
+			Output: map[string]any{
+				"duration_ms": duration.Milliseconds(),
+				"error":       err.Error(),
+			},
+		}
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	bodyText := strings.TrimSpace(string(bodyBytes))
+	output := map[string]any{
+		"status_code": resp.StatusCode,
+		"duration_ms": duration.Milliseconds(),
+		"headers": map[string]string{
+			"Content-Type": resp.Header.Get("Content-Type"),
+		},
+		"body": bodyText,
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return modelConfigConnectionTestResult{Success: true, Message: "连接测试成功", Input: input, Output: output}
+	}
+
+	detail := bodyText
+	if detail == "" {
+		detail = http.StatusText(resp.StatusCode)
+	}
+	return modelConfigConnectionTestResult{
+		Success: false,
+		Message: fmt.Sprintf("连接测试失败: upstream returned %d %s", resp.StatusCode, detail),
+		Input:   input,
+		Output:  output,
+	}
+}
+
+func modelConfigResult(result modelConfigConnectionTestResult) map[string]any {
+	return map[string]any{
+		"success": true,
+		"data":    result,
+	}
 }
 
 func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Request) {
@@ -268,16 +375,12 @@ func (h *ModelConfigHandler) TestModelConfig(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	success := true
-	if strings.TrimSpace(config.APIBaseURL) == "" || strings.TrimSpace(config.ModelName) == "" {
-		success = false
-	}
+	ctx, cancel := context.WithTimeout(r.Context(), modelConfigConnectionTestTimeout)
+	defer cancel()
+	result := testModelConfigConnection(ctx, config)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"success": success,
-		"message": map[bool]string{true: "连接测试成功", false: "连接测试失败"}[success],
-	})
+	json.NewEncoder(w).Encode(modelConfigResult(result))
 }
 
 func (h *ModelConfigHandler) ResetModelConfigRuntime(w http.ResponseWriter, r *http.Request) {
@@ -303,8 +406,10 @@ func (h *ModelConfigHandler) ResetModelConfigRuntime(w http.ResponseWriter, r *h
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"success": true,
-		"reset":   reset,
-		"message": map[bool]string{true: "调度状态已重置", false: "当前没有可重置的运行时状态"}[reset],
+		"data": map[string]any{
+			"reset":   reset,
+			"message": map[bool]string{true: "调度状态已重置", false: "当前没有可重置的运行时状态"}[reset],
+		},
 	})
 }
 
@@ -314,8 +419,10 @@ func (h *ModelConfigHandler) ResetAllModelConfigRuntime(w http.ResponseWriter, r
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"success":     true,
-		"reset_count": resetCount,
-		"message":     "全部调度状态已重置",
+		"success": true,
+		"data": map[string]any{
+			"reset_count": resetCount,
+			"message":     "全部调度状态已重置",
+		},
 	})
 }

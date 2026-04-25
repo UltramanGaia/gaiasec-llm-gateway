@@ -231,7 +231,7 @@ func (h *LogHandler) ReplayLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startTime := time.Now()
-	resp, selectedConfig, lease, attempts, err := chatHandler.dispatchProviderRequest(r.Header, modifiedRequestRaw, modelName, configs, isStream)
+	resp, selectedConfig, lease, attempts, err := chatHandler.dispatchProviderRequest(r.Context(), r.Header, modifiedRequestRaw, modelName, configs, isStream)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"model":    modelName,

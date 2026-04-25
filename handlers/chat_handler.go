@@ -3,8 +3,8 @@ package handlers
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -81,7 +81,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, selectedConfig, lease, attempts, err := h.dispatchProviderRequest(r.Header, requestBody, modelName, configs, isStream)
+	resp, selectedConfig, lease, attempts, err := h.dispatchProviderRequest(r.Context(), r.Header, requestBody, modelName, configs, isStream)
 	if err != nil {
 		log.WithError(err).WithFields(log.Fields{
 			"model":    modelName,
@@ -222,7 +222,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp, selectedConfig, lease, attempts, err := h.dispatchAnthropicRequest(r.Header, body, modelName, configs, isStream)
+	resp, selectedConfig, lease, attempts, err := h.dispatchAnthropicRequest(r.Context(), r.Header, body, modelName, configs, isStream)
 	if err != nil {
 		log.WithError(err).WithFields(log.Fields{
 			"model":    modelName,
@@ -291,85 +291,97 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 	}).Info("Anthropic request served")
 }
 
-func (h *ChatHandler) dispatchAnthropicRequest(headers http.Header, body []byte, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, *backendRequestLease, []providerAttempt, error) {
-	orderedConfigs := buildAttemptOrder(modelName, configs)
-	attempts := make([]providerAttempt, 0, len(orderedConfigs))
+func (h *ChatHandler) dispatchAnthropicRequest(ctx context.Context, headers http.Header, body []byte, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, *backendRequestLease, []providerAttempt, error) {
+	attempts := make([]providerAttempt, 0, len(configs))
 
 	var lastFailure *providerFailureResponse
 	var lastErr error
 
-	for _, config := range orderedConfigs {
-		lease, ok := getBackendRuntimeManager().startRequest(config, modelName)
-		if !ok {
-			attempts = append(attempts, providerAttempt{
+	for {
+		orderedConfigs := buildAttemptOrder(modelName, configs)
+		if len(orderedConfigs) == 0 {
+			if err := waitForBackendCapacity(ctx, modelName); err != nil {
+				return nil, models.ModelConfig{}, nil, attempts, err
+			}
+			continue
+		}
+
+		for _, config := range orderedConfigs {
+			lease, ok := getBackendRuntimeManager().startRequest(config, modelName)
+			if !ok {
+				attempts = append(attempts, providerAttempt{
+					ConfigID:     config.ID,
+					BackendModel: config.ModelName,
+					APIBaseURL:   config.APIBaseURL,
+					Error:        "max concurrency reached",
+				})
+				continue
+			}
+			attemptStart := time.Now()
+			resp, err := h.sendAnthropicRequest(headers, body, config, isStream)
+			attempt := providerAttempt{
 				ConfigID:     config.ID,
 				BackendModel: config.ModelName,
 				APIBaseURL:   config.APIBaseURL,
-				Error:        "max concurrency reached",
-			})
-			continue
-		}
-		attemptStart := time.Now()
-		resp, err := h.sendAnthropicRequest(headers, body, config, isStream)
-		attempt := providerAttempt{
-			ConfigID:     config.ID,
-			BackendModel: config.ModelName,
-			APIBaseURL:   config.APIBaseURL,
-			ActiveCount:  lease.ActiveRequestsOnStart(),
-		}
+				ActiveCount:  lease.ActiveRequestsOnStart(),
+			}
 
-		if err != nil {
-			attempt.Error = err.Error()
+			if err != nil {
+				attempt.Error = err.Error()
+				attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
+				attempts = append(attempts, attempt)
+				lease.Finish(backendObservation{
+					Success:        false,
+					ResponseTimeMS: attempt.ResponseTime,
+				})
+				lastErr = err
+				continue
+			}
+
+			attempt.StatusCode = resp.StatusCode
 			attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				attempts = append(attempts, attempt)
+				return resp, config, lease, attempts, nil
+			}
+
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				attempt.Error = readErr.Error()
+				attempts = append(attempts, attempt)
+				lease.Finish(backendObservation{
+					Success:        false,
+					ResponseTimeMS: attempt.ResponseTime,
+				})
+				lastErr = readErr
+				continue
+			}
+
 			attempts = append(attempts, attempt)
 			lease.Finish(backendObservation{
 				Success:        false,
 				ResponseTimeMS: attempt.ResponseTime,
 			})
-			lastErr = err
-			continue
+			lastFailure = &providerFailureResponse{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       body,
+				Config:     config,
+			}
 		}
 
-		attempt.StatusCode = resp.StatusCode
-		attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			attempts = append(attempts, attempt)
-			return resp, config, lease, attempts, nil
+		if lastFailure != nil {
+			return cloneFailureResponse(lastFailure), lastFailure.Config, nil, attempts, nil
+		}
+		if lastErr != nil {
+			return nil, models.ModelConfig{}, nil, attempts, lastErr
 		}
 
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			attempt.Error = readErr.Error()
-			attempts = append(attempts, attempt)
-			lease.Finish(backendObservation{
-				Success:        false,
-				ResponseTimeMS: attempt.ResponseTime,
-			})
-			lastErr = readErr
-			continue
-		}
-
-		attempts = append(attempts, attempt)
-		lease.Finish(backendObservation{
-			Success:        false,
-			ResponseTimeMS: attempt.ResponseTime,
-		})
-		lastFailure = &providerFailureResponse{
-			StatusCode: resp.StatusCode,
-			Header:     resp.Header.Clone(),
-			Body:       body,
-			Config:     config,
+		if err := waitForBackendCapacity(ctx, modelName); err != nil {
+			return nil, models.ModelConfig{}, nil, attempts, err
 		}
 	}
-
-	if lastFailure != nil {
-		return cloneFailureResponse(lastFailure), lastFailure.Config, nil, attempts, nil
-	}
-	if lastErr != nil {
-		return nil, models.ModelConfig{}, nil, attempts, lastErr
-	}
-	return nil, models.ModelConfig{}, nil, attempts, errors.New("no available backend model config")
 }
 
 func (h *ChatHandler) sendAnthropicRequest(headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
