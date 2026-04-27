@@ -40,8 +40,8 @@
             <div class="stat-content">
               <div class="stat-icon" style="background: #f56c6c;"><el-icon><TrendCharts /></el-icon></div>
               <div class="stat-info">
-                <div class="stat-value">{{ avgSuccessRate }}%</div>
-                <div class="stat-label">平均成功率</div>
+                <div class="stat-value">{{ totalWaitingRequests }}</div>
+                <div class="stat-label">排队请求</div>
               </div>
             </div>
           </el-card>
@@ -111,6 +111,9 @@
                   <div class="metric-label-small">并发使用</div>
                   <div class="concurrency-ratio-small">
                     {{ getStat(config)?.activeRequests ?? 0 }} / {{ config.maxConcurrency === 0 ? '∞' : config.maxConcurrency }}
+                  </div>
+                  <div class="queue-ratio-small" :class="{ 'has-queue': getWaitingRequests(config) > 0 }">
+                    排队 {{ getWaitingRequests(config) }}
                   </div>
                   <el-progress :percentage="getConcurrencyPercent(config)" :color="getConcurrencyColor(config)" :stroke-width="8" :show-text="false" />
                   <div class="concurrency-status-small">
@@ -249,13 +252,9 @@ const enabledCount = computed(() => modelConfigs.value.filter(c => c.enabled).le
 const totalActiveRequests = computed(() =>
   modelConfigs.value.reduce((s, c) => s + (getStat(c)?.activeRequests || 0), 0)
 );
-const avgSuccessRate = computed(() => {
-  const rates = modelConfigs.value
-    .map(c => getStat(c)?.successRate)
-    .filter(r => r !== undefined && r !== null);
-  if (!rates.length) return 0;
-  return ((rates.reduce((s, r) => s + r, 0) / rates.length) * 100).toFixed(1);
-});
+const totalWaitingRequests = computed(() =>
+  modelConfigs.value.reduce((s, c) => s + getWaitingRequests(c), 0)
+);
 const filteredConfigs = computed(() => {
   let result = modelConfigs.value;
   if (searchKeyword.value) {
@@ -292,6 +291,7 @@ const normalizeProviderStat = (stat = {}) => ({
   avgFirstTokenLatency: stat.avgFirstTokenLatency ?? stat.avg_first_token_latency ?? 0,
   avgTokenLatency: stat.avgTokenLatency ?? stat.avg_token_latency ?? 0,
   activeRequests: stat.activeRequests ?? stat.active_requests ?? 0,
+  waitingRequests: stat.waitingRequests ?? stat.waiting_requests ?? 0,
   successRate: stat.successRate ?? stat.success_rate ?? null,
   backendConfigId: stat.backendConfigId ?? stat.backend_config_id ?? 0,
   backendModelName: stat.backendModelName ?? stat.backend_model_name ?? '',
@@ -422,6 +422,7 @@ const truncate = (text, max) => text?.length > max ? text.substring(0, max) + '.
 const formatLatency = (v) => v ? `${Math.round(v)}ms` : '-';
 const formatPercent = (v) => v !== undefined && v !== null ? `${(v * 100).toFixed(1)}%` : '-';
 const formatScore = (v) => v !== undefined && v !== null ? v.toFixed(0) : '-';
+const getWaitingRequests = (config) => getStat(config)?.waitingRequests || 0;
 const getScoreColor = (v) => {
   if (v === undefined || v === null) return '#909399';
   if (v < 500) return '#67c23a';
@@ -439,10 +440,12 @@ const getConcurrencyColor = (config) => {
   return p < 60 ? '#67c23a' : p < 80 ? '#e6a23c' : '#f56c6c';
 };
 const getConcurrencyTagType = (config) => {
+  if (getWaitingRequests(config) > 0) return 'danger';
   const p = getConcurrencyPercent(config);
   return p < 60 ? 'success' : p < 80 ? 'warning' : 'danger';
 };
 const getConcurrencyStatusText = (config) => {
+  if (getWaitingRequests(config) > 0) return '排队中';
   if (config.maxConcurrency === 0) return '无限制';
   const p = getConcurrencyPercent(config);
   if (p >= 90) return '接近满载';
@@ -493,7 +496,9 @@ onBeforeUnmount(() => { if (statsTimer) clearInterval(statsTimer); });
 .priority-value-small.priority-high { background: linear-gradient(135deg, #67c23a 0%, #85ce61 100%); color: white; }
 .priority-value-small.priority-medium { background: linear-gradient(135deg, #e6a23c 0%, #ebb563 100%); color: white; }
 .priority-value-small.priority-low { background: linear-gradient(135deg, #909399 0%, #a6a9ad 100%); color: white; }
-.concurrency-ratio-small { font-size: 12px; font-weight: bold; color: var(--el-text-color-primary); margin-bottom: 6px; }
+.concurrency-ratio-small { font-size: 12px; font-weight: bold; color: var(--el-text-color-primary); margin-bottom: 2px; }
+.queue-ratio-small { margin-bottom: 6px; text-align: center; font-size: 11px; color: var(--el-text-color-secondary); }
+.queue-ratio-small.has-queue { color: #f56c6c; font-weight: 600; }
 .concurrency-status-small { display: flex; justify-content: center; margin-top: 4px; }
 .metrics-section { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0; padding: 8px; background: var(--el-fill-color-lighter); border-radius: 6px; }
 .metric-item { text-align: center; }
