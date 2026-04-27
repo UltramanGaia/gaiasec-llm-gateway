@@ -18,6 +18,16 @@ function createApiInstance(baseURL) {
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
   });
 
+  instance.interceptors.request.use((config) => {
+    if (config.data && typeof FormData !== 'undefined' && !(config.data instanceof FormData)) {
+      config.data = toSnakeCaseDeep(config.data);
+    }
+    if (config.params) {
+      config.params = toSnakeCaseDeep(config.params);
+    }
+    return config;
+  });
+
   instance.interceptors.response.use(
     (response) => {
       const data = response.data;
@@ -49,12 +59,31 @@ function toCamelKey(key) {
   return key.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
 }
 
+function toSnakeKey(key) {
+  return key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase();
+}
+
 function toCamelCaseDeep(value) {
   if (Array.isArray(value)) return value.map(toCamelCaseDeep);
   if (value !== null && typeof value === 'object') {
     const result = {};
     for (const [k, v] of Object.entries(value)) {
       result[toCamelKey(k)] = toCamelCaseDeep(v);
+    }
+    return result;
+  }
+  return value;
+}
+
+function toSnakeCaseDeep(value) {
+  if (Array.isArray(value)) return value.map(toSnakeCaseDeep);
+  if (value !== null && typeof value === 'object') {
+    const result = {};
+    for (const [k, v] of Object.entries(value)) {
+      result[toSnakeKey(k)] = toSnakeCaseDeep(v);
     }
     return result;
   }

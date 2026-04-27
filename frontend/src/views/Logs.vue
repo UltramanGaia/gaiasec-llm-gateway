@@ -135,19 +135,43 @@ const currentLog = ref(null);
 const replayVisible = ref(false);
 const replayLog = ref(null);
 
+const normalizeLog = (log = {}) => ({
+  ...log,
+  modelName: log.model_name ?? log.modelName ?? '',
+  backendModelName: log.backend_model_name ?? log.backendModelName ?? '',
+  createdAt: log.created_at ?? log.createdAt ?? '',
+  responseTime: log.response_time ?? log.responseTime ?? 0,
+  firstTokenLatency: log.first_token_latency ?? log.firstTokenLatency ?? 0,
+  avgTokenLatency: log.avg_token_latency ?? log.avgTokenLatency ?? 0,
+  activeRequests: log.active_requests ?? log.activeRequests ?? 0,
+});
+
+const normalizeSummary = (data = {}) => ({
+  totalRequests: data.total_requests ?? data.totalRequests ?? 0,
+  avgResponseTime: data.avg_response_time ?? data.avgResponseTime ?? 0,
+  avgFirstTokenLatency: data.avg_first_token_latency ?? data.avgFirstTokenLatency ?? 0,
+  avgTokenLatency: data.avg_token_latency ?? data.avgTokenLatency ?? 0,
+  activeRequests: data.active_requests ?? data.activeRequests ?? 0,
+});
+
+const normalizeModelConfig = (config = {}) => ({
+  ...config,
+  modelName: config.model_name ?? config.modelName ?? '',
+});
+
 const fetchLogs = async () => {
   loading.value = true;
   try {
     const params = {};
     if (filters.page) params.page = filters.page;
-    if (filters.pageSize) params.size = filters.pageSize;
+    if (filters.pageSize) params.page_size = filters.pageSize;
     if (filters.model) params.model = filters.model;
-    if (filters.backendModel) params.backendModel = filters.backendModel;
-    if (filters.startDate) params.startDate = filters.startDate;
-    if (filters.endDate) params.endDate = filters.endDate;
+    if (filters.backendModel) params.backend_model = filters.backendModel;
+    if (filters.startDate) params.start_date = filters.startDate;
+    if (filters.endDate) params.end_date = filters.endDate;
     const res = await api.get('/request-logs', { params });
     const data = res.data || {};
-    logs.value = data.records || data.logs || [];
+    logs.value = (data.records || data.logs || []).map(log => normalizeLog(log));
     totalLogs.value = data.total || 0;
   } catch {
     ElMessage.error('获取日志列表失败');
@@ -159,14 +183,14 @@ const fetchLogs = async () => {
 const fetchSummary = async () => {
   try {
     const res = await api.get('/stats');
-    summary.value = res.data || null;
+    summary.value = res.data ? normalizeSummary(res.data) : null;
   } catch {}
 };
 
 const fetchModels = async () => {
   try {
     const res = await api.get('/model-configs');
-    const data = Array.isArray(res.data) ? res.data : [];
+    const data = Array.isArray(res.data) ? res.data.map(config => normalizeModelConfig(config)) : [];
     const backendSet = new Set();
     models.value = data
       .filter(c => c.enabled !== false && c.name)

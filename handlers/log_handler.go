@@ -42,26 +42,26 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		query = query.Where("model_name = ?", model)
 	}
 
-	if backendConfigID := queryValue(r, "backend_config_id", "backendConfigId"); backendConfigID != "" {
+	if backendConfigID := queryValue(r, "backend_config_id"); backendConfigID != "" {
 		query = query.Where("backend_config_id = ?", backendConfigID)
 	}
 
-	if backendModel := queryValue(r, "backend_model", "backendModel"); backendModel != "" {
+	if backendModel := queryValue(r, "backend_model"); backendModel != "" {
 		query = query.Where("backend_model_name = ?", backendModel)
 	}
 
-	if userToken := queryValue(r, "user_token", "userToken"); userToken != "" {
+	if userToken := queryValue(r, "user_token"); userToken != "" {
 		query = query.Where("user_token = ?", userToken)
 	}
 
 	// 添加日期范围过滤
-	if startDate := queryValue(r, "start_date", "startDate"); startDate != "" {
+	if startDate := queryValue(r, "start_date"); startDate != "" {
 		if t, err := time.Parse(time.RFC3339, startDate); err == nil {
 			query = query.Where("created_at >= ?", t)
 		}
 	}
 
-	if endDate := queryValue(r, "end_date", "endDate"); endDate != "" {
+	if endDate := queryValue(r, "end_date"); endDate != "" {
 		if t, err := time.Parse(time.RFC3339, endDate); err == nil {
 			query = query.Where("created_at <= ?", t)
 		}
@@ -77,7 +77,7 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if pageSizeStr := queryValue(r, "page_size", "pageSize", "size"); pageSizeStr != "" {
+	if pageSizeStr := queryValue(r, "page_size", "size"); pageSizeStr != "" {
 		if ps, err := strconv.Atoi(pageSizeStr); err == nil && ps > 0 {
 			pageSize = ps
 		}

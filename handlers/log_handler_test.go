@@ -6,11 +6,11 @@ import (
 )
 
 func TestLogQueryValueSupportsSnakeCase(t *testing.T) {
-	request := httptest.NewRequest("GET", "/api/request-logs?backend_config_id=7&backendConfigId=9", nil)
+	request := httptest.NewRequest("GET", "/api/request-logs?backend_config_id=7", nil)
 
-	value := queryValue(request, "backend_config_id", "backendConfigId")
+	value := queryValue(request, "backend_config_id")
 
 	if value != "7" {
-		t.Fatalf("expected snake_case value to win, got %q", value)
+		t.Fatalf("expected snake_case value, got %q", value)
 	}
 }
