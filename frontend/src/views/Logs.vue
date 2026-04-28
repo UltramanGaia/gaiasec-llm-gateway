@@ -128,7 +128,7 @@ const backendModels = ref([]);
 const autoRefresh = ref(true);
 let refreshTimer = null;
 
-const filters = reactive({ model: '', backendModel: '', startDate: '', endDate: '', page: 1, pageSize: 10 });
+const filters = reactive({ model: '', backendModel: '', startDate: '', endDate: '', page: 1, pageSize: 20 });
 
 const detailVisible = ref(false);
 const currentLog = ref(null);

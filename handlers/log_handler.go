@@ -69,7 +69,7 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	// 获取分页参数
 	page := 1
-	pageSize := 10
+	pageSize := 20
 
 	if pageStr := queryValue(r, "page"); pageStr != "" {
 		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
