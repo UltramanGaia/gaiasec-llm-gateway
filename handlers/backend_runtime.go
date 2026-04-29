@@ -55,6 +55,7 @@ type backendRuntimeSnapshot struct {
 	ModelName            string  `json:"model_name"`
 	BackendModelName     string  `json:"backend_model_name"`
 	BackendAPIBaseURL    string  `json:"backend_api_base_url"`
+	MaxConcurrency       int     `json:"max_concurrency"`
 	ActiveRequests       int     `json:"active_requests"`
 	WaitingRequests      int     `json:"waiting_requests"`
 	TotalRequests        int64   `json:"total_requests"`
@@ -73,6 +74,7 @@ type backendRuntimeState struct {
 	ModelName           string
 	BackendModelName    string
 	BackendAPIBaseURL   string
+	MaxConcurrency      int
 	ActiveRequests      int
 	TotalRequests       int64
 	SuccessCount        int64
@@ -124,6 +126,7 @@ func (m *backendRuntimeManager) resetConfigState(config models.ModelConfig, publ
 	state.ModelName = publicModelName
 	state.BackendModelName = config.ModelName
 	state.BackendAPIBaseURL = config.APIBaseURL
+	state.MaxConcurrency = config.MaxConcurrency
 	state.TotalRequests = 0
 	state.SuccessCount = 0
 	state.FailureCount = 0
@@ -162,7 +165,8 @@ func (m *backendRuntimeManager) startRequest(config models.ModelConfig, publicMo
 	defer m.mu.Unlock()
 
 	state := m.getOrCreateStateLocked(config, publicModelName)
-	if config.MaxConcurrency > 0 && state.ActiveRequests >= config.MaxConcurrency {
+	maxConcurrency := state.MaxConcurrency
+	if maxConcurrency > 0 && state.ActiveRequests >= maxConcurrency {
 		return nil, false
 	}
 	state.ActiveRequests++
@@ -228,6 +232,24 @@ func (m *backendRuntimeManager) beginWait(publicModelName string) {
 	m.waitingByModel[publicModelName]++
 }
 
+func (m *backendRuntimeManager) updateConfig(config models.ModelConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state := m.states[config.ID]
+	if state == nil {
+		state = &backendRuntimeState{
+			ConfigID: config.ID,
+		}
+		m.states[config.ID] = state
+	}
+	state.ModelName = config.Name
+	state.BackendModelName = config.ModelName
+	state.BackendAPIBaseURL = config.APIBaseURL
+	state.MaxConcurrency = config.MaxConcurrency
+	state.LastUpdatedAt = time.Now()
+}
+
 func (m *backendRuntimeManager) endWait(publicModelName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -247,8 +269,13 @@ func (m *backendRuntimeManager) getOrCreateStateLocked(config models.ModelConfig
 			ModelName:         publicModelName,
 			BackendModelName:  config.ModelName,
 			BackendAPIBaseURL: config.APIBaseURL,
+			MaxConcurrency:    config.MaxConcurrency,
 		}
 		m.states[config.ID] = state
+	} else {
+		state.ModelName = publicModelName
+		state.BackendModelName = config.ModelName
+		state.BackendAPIBaseURL = config.APIBaseURL
 	}
 	return state
 }
@@ -269,7 +296,11 @@ func (m *backendRuntimeManager) buildAttemptOrder(modelName string, configs []mo
 	ranked := make([]rankedBackendConfig, 0, len(configs))
 	for _, config := range configs {
 		state := m.states[config.ID]
-		if config.MaxConcurrency > 0 && state != nil && state.ActiveRequests >= config.MaxConcurrency {
+		maxConcurrency := config.MaxConcurrency
+		if state != nil {
+			maxConcurrency = state.MaxConcurrency
+		}
+		if maxConcurrency > 0 && state != nil && state.ActiveRequests >= maxConcurrency {
 			continue
 		}
 		score := defaultBackendLatencyScore
@@ -408,6 +439,7 @@ func (m *backendRuntimeManager) snapshots() []backendRuntimeSnapshot {
 			ModelName:            state.ModelName,
 			BackendModelName:     state.BackendModelName,
 			BackendAPIBaseURL:    state.BackendAPIBaseURL,
+			MaxConcurrency:       state.MaxConcurrency,
 			ActiveRequests:       state.ActiveRequests,
 			WaitingRequests:      m.waitingByModel[state.ModelName],
 			TotalRequests:        state.TotalRequests,

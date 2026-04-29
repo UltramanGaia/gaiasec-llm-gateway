@@ -15,9 +15,9 @@ import (
 	"llm-gateway/handlers"
 	"llm-gateway/models"
 
+	"github.com/glebarez/sqlite"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
@@ -454,9 +454,7 @@ func main() {
 		"header_timeout": cfg.ReadHeaderTimeout,
 	}).Info("Server starting")
 
-	rateLimiter := NewRateLimiter(100, time.Minute)
-
-	handler := rateLimitMiddleware(rateLimiter, accessLogMiddleware(mux))
+	handler := accessLogMiddleware(mux)
 
 	server := &http.Server{
 		Addr:              address,

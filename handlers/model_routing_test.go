@@ -436,6 +436,57 @@ func TestDispatchProviderRequestWaitsForBackendCapacity(t *testing.T) {
 	}
 }
 
+func TestDispatchProviderRequestUsesRuntimeMaxConcurrencyUpdate(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer provider.Close()
+
+	handler := &ChatHandler{}
+	staleConfig := models.ModelConfig{
+		ID:             1,
+		Name:           "auto-capacity",
+		ModelName:      "backend-a",
+		APIBaseURL:     provider.URL,
+		MaxConcurrency: 1,
+	}
+
+	firstLease, ok := getBackendRuntimeManager().startRequest(staleConfig, "auto-capacity")
+	if !ok {
+		t.Fatalf("expected initial lease to be acquired")
+	}
+	defer firstLease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	updatedConfig := staleConfig
+	updatedConfig.MaxConcurrency = 2
+	getBackendRuntimeManager().updateConfig(updatedConfig)
+
+	requestBody := mustRawMessageMap(t, map[string]interface{}{
+		"model":    "auto-capacity",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	})
+
+	resp, selectedConfig, lease, attempts, err := handler.dispatchProviderRequest(context.Background(), http.Header{}, requestBody, "auto-capacity", []models.ModelConfig{staleConfig}, false)
+	if err != nil {
+		t.Fatalf("dispatchProviderRequest returned error after runtime capacity update: %v", err)
+	}
+	defer resp.Body.Close()
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	if selectedConfig.ID != staleConfig.ID {
+		t.Fatalf("expected selected backend %d, got %d", staleConfig.ID, selectedConfig.ID)
+	}
+	if len(attempts) != 1 || attempts[0].StatusCode != http.StatusOK {
+		t.Fatalf("expected successful provider attempt, got %#v", attempts)
+	}
+	if lease.ActiveRequestsOnStart() != 2 {
+		t.Fatalf("expected second request to start under updated capacity, got active count %d", lease.ActiveRequestsOnStart())
+	}
+}
+
 func TestDispatchProviderRequestStopsWaitingWhenContextIsCanceled(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 

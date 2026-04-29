@@ -217,6 +217,7 @@ func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Re
 	}
 
 	InvalidateAllModelConfigCache()
+	getBackendRuntimeManager().updateConfig(config)
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(toModelConfigResponse(config))
@@ -330,6 +331,7 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 	}
 
 	InvalidateAllModelConfigCache()
+	getBackendRuntimeManager().updateConfig(config)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(toModelConfigResponse(config))
