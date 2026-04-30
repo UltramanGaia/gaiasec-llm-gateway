@@ -237,7 +237,7 @@ let statsTimer = null;
 
 const defaultForm = () => ({
   name: '', modelName: '', apiBaseUrl: '', apiKey: '',
-  maxTokens: 8192, priority: 0, maxConcurrency: 0, temperature: 0.7,
+  maxTokens: 32000, priority: 0, maxConcurrency: 0, temperature: 0.7,
   description: '', enabled: true,
 });
 const form = ref(defaultForm());
@@ -276,7 +276,7 @@ const normalizeModelConfig = (config = {}) => ({
   apiBaseUrl: config.apiBaseUrl ?? config.api_base_url ?? '',
   apiKey: '',
   apiKeySet: config.apiKeySet ?? config.api_key_set ?? false,
-  maxTokens: config.maxTokens ?? config.max_tokens ?? 8192,
+  maxTokens: config.maxTokens ?? config.max_tokens ?? 32000,
   priority: config.priority ?? 0,
   maxConcurrency: config.maxConcurrency ?? config.max_concurrency ?? 0,
   temperature: config.temperature ?? 0.7,

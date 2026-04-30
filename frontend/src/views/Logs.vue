@@ -54,7 +54,7 @@
           </el-table-column>
           <el-table-column label="Message Content" min-width="200">
             <template #default="{ row }">
-              <div class="message-content">{{ getLastMessage(row.request) }}</div>
+              <div class="message-content">{{ getLastMessage(row) }}</div>
             </template>
           </el-table-column>
           <el-table-column label="Response Time" width="120" align="center">
@@ -127,6 +127,8 @@ const models = ref([]);
 const backendModels = ref([]);
 const autoRefresh = ref(true);
 let refreshTimer = null;
+let logsInFlight = false;
+let summaryInFlight = false;
 
 const filters = reactive({ model: '', backendModel: '', startDate: '', endDate: '', page: 1, pageSize: 20 });
 
@@ -144,6 +146,10 @@ const normalizeLog = (log = {}) => ({
   firstTokenLatency: log.first_token_latency ?? log.firstTokenLatency ?? 0,
   avgTokenLatency: log.avg_token_latency ?? log.avgTokenLatency ?? 0,
   activeRequests: log.active_requests ?? log.activeRequests ?? 0,
+  requestPreview: log.request_preview ?? log.requestPreview ?? '',
+  requestBytes: log.request_bytes ?? log.requestBytes ?? 0,
+  responseBytes: log.response_bytes ?? log.responseBytes ?? 0,
+  streamBytes: log.stream_bytes ?? log.streamBytes ?? 0,
 });
 
 const normalizeSummary = (data = {}) => ({
@@ -160,6 +166,8 @@ const normalizeModelConfig = (config = {}) => ({
 });
 
 const fetchLogs = async () => {
+  if (logsInFlight) return;
+  logsInFlight = true;
   loading.value = true;
   try {
     const params = {};
@@ -177,14 +185,20 @@ const fetchLogs = async () => {
     ElMessage.error('获取日志列表失败');
   } finally {
     loading.value = false;
+    logsInFlight = false;
   }
 };
 
 const fetchSummary = async () => {
+  if (summaryInFlight) return;
+  summaryInFlight = true;
   try {
     const res = await api.get('/stats');
     summary.value = res.data ? normalizeSummary(res.data) : null;
-  } catch {}
+  } catch {
+  } finally {
+    summaryInFlight = false;
+  }
 };
 
 const fetchModels = async () => {
@@ -206,10 +220,33 @@ const resetFilters = () => {
   fetchLogs();
 };
 
-const viewLog = (log) => { currentLog.value = log; detailVisible.value = true; };
-const openReplay = (log) => { replayLog.value = log; replayVisible.value = true; };
+const loadLogDetail = async (log) => {
+  if (log.request || log.response || log.streamResponse) return log;
+  const res = await api.get(`/request-logs/${log.id}`);
+  return normalizeLog(res.data || {});
+};
 
-const getLastMessage = (requestStr) => {
+const viewLog = async (log) => {
+  try {
+    currentLog.value = await loadLogDetail(log);
+    detailVisible.value = true;
+  } catch {
+    ElMessage.error('获取日志详情失败');
+  }
+};
+
+const openReplay = async (log) => {
+  try {
+    replayLog.value = await loadLogDetail(log);
+    replayVisible.value = true;
+  } catch {
+    ElMessage.error('获取日志详情失败');
+  }
+};
+
+const getLastMessage = (row) => {
+  if (row.requestPreview) return row.requestPreview;
+  const requestStr = row.request;
   if (!requestStr) return 'N/A';
   try {
     const req = JSON.parse(requestStr);
@@ -227,18 +264,29 @@ const getLastMessage = (requestStr) => {
 };
 
 const toggleAutoRefresh = (val) => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
   if (val) {
-    refreshTimer = setInterval(() => { fetchLogs(); fetchSummary(); }, 5000);
+    refreshTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      fetchLogs();
+      fetchSummary();
+    }, 5000);
     ElMessage.success('自动刷新已开启');
   } else {
-    clearInterval(refreshTimer); refreshTimer = null;
     ElMessage.info('自动刷新已关闭');
   }
 };
 
 onMounted(() => {
   fetchLogs(); fetchModels(); fetchSummary();
-  refreshTimer = setInterval(() => { fetchLogs(); fetchSummary(); }, 5000);
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    fetchLogs();
+    fetchSummary();
+  }, 5000);
 });
 onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer); });
 </script>

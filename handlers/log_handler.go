@@ -28,13 +28,50 @@ func NewLogHandler(db *gorm.DB) *LogHandler {
 
 // LogResponse 定义日志响应结构，包含分页信息
 type LogResponse struct {
-	Total int64               `json:"total"`
-	Logs  []models.RequestLog `json:"logs"`
+	Total int64        `json:"total"`
+	Logs  []LogSummary `json:"logs"`
+}
+
+type LogSummary struct {
+	ID                uint      `json:"id"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ModelName         string    `json:"model_name"`
+	BackendConfigID   uint      `json:"backend_config_id"`
+	BackendModelName  string    `json:"backend_model_name"`
+	BackendAPIBaseURL string    `json:"backend_api_base_url"`
+	Fingerprint       string    `json:"fingerprint"`
+	ResponseTime      int64     `json:"response_time"`
+	FirstTokenLatency int64     `json:"first_token_latency"`
+	AvgTokenLatency   float64   `json:"avg_token_latency"`
+	ActiveRequests    int       `json:"active_requests"`
+	RequestPreview    string    `json:"request_preview"`
+	RequestBytes      int       `json:"request_bytes"`
+	ResponseBytes     int       `json:"response_bytes"`
+	StreamBytes       int       `json:"stream_bytes"`
+}
+
+type logListRow struct {
+	ID                   uint
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ModelName            string
+	BackendConfigID      uint
+	BackendModelName     string
+	BackendAPIBaseURL    string
+	Fingerprint          string
+	ResponseTime         int64
+	FirstTokenLatency    int64
+	AvgTokenLatency      float64
+	ActiveRequests       int
+	RequestPreviewSource string
+	RequestBytes         int
+	ResponseBytes        int
+	StreamBytes          int
 }
 
 // GetLogs 获取请求日志列表，可以根据查询参数过滤和分页
 func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
-	var logs []models.RequestLog
 	query := h.DB
 
 	// Add filters based on query parameters
@@ -79,7 +116,7 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	if pageSizeStr := queryValue(r, "page_size", "size"); pageSizeStr != "" {
 		if ps, err := strconv.Atoi(pageSizeStr); err == nil && ps > 0 {
-			pageSize = ps
+			pageSize = clampLogPageSize(ps)
 		}
 	}
 
@@ -92,9 +129,38 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	// 分页查询
 	offset := (page - 1) * pageSize
-	if err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&logs).Error; err != nil {
+	var rows []logListRow
+	if err := query.
+		Model(&models.RequestLog{}).
+		Select(`
+			id,
+			created_at,
+			updated_at,
+			model_name,
+			backend_config_id,
+			backend_model_name,
+			backend_api_base_url,
+			fingerprint,
+			response_time,
+			first_token_latency,
+			avg_token_latency,
+			active_requests,
+			SUBSTR(request, 1, 4096) AS request_preview_source,
+			COALESCE(LENGTH(request), 0) AS request_bytes,
+			COALESCE(LENGTH(response), 0) AS response_bytes,
+			COALESCE(LENGTH(stream_response), 0) AS stream_bytes
+		`).
+		Order("created_at DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Scan(&rows).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	logs := make([]LogSummary, 0, len(rows))
+	for _, row := range rows {
+		logs = append(logs, summarizeLog(row))
 	}
 
 	// 返回带分页信息的响应
@@ -105,6 +171,92 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func clampLogPageSize(pageSize int) int {
+	const maxLogPageSize = 100
+	if pageSize > maxLogPageSize {
+		return maxLogPageSize
+	}
+	return pageSize
+}
+
+func summarizeLog(log logListRow) LogSummary {
+	return LogSummary{
+		ID:                log.ID,
+		CreatedAt:         log.CreatedAt,
+		UpdatedAt:         log.UpdatedAt,
+		ModelName:         log.ModelName,
+		BackendConfigID:   log.BackendConfigID,
+		BackendModelName:  log.BackendModelName,
+		BackendAPIBaseURL: log.BackendAPIBaseURL,
+		Fingerprint:       log.Fingerprint,
+		ResponseTime:      log.ResponseTime,
+		FirstTokenLatency: log.FirstTokenLatency,
+		AvgTokenLatency:   log.AvgTokenLatency,
+		ActiveRequests:    log.ActiveRequests,
+		RequestPreview:    requestPreview(log.RequestPreviewSource),
+		RequestBytes:      log.RequestBytes,
+		ResponseBytes:     log.ResponseBytes,
+		StreamBytes:       log.StreamBytes,
+	}
+}
+
+func requestPreview(request string) string {
+	if request == "" {
+		return ""
+	}
+
+	var payload struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Prompt json.RawMessage `json:"prompt"`
+	}
+	if err := json.Unmarshal([]byte(request), &payload); err != nil {
+		return truncateForPreview(strings.ReplaceAll(request, "\n", ""))
+	}
+	for i := len(payload.Messages) - 1; i >= 0; i-- {
+		if payload.Messages[i].Role != "user" {
+			continue
+		}
+		if text := contentPreview(payload.Messages[i].Content); text != "" {
+			return truncateForPreview(text)
+		}
+	}
+	return truncateForPreview(contentPreview(payload.Prompt))
+}
+
+func contentPreview(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.ReplaceAll(text, "\n", "")
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		for i := len(parts) - 1; i >= 0; i-- {
+			if parts[i].Type == "text" && parts[i].Text != "" {
+				return strings.ReplaceAll(parts[i].Text, "\n", "")
+			}
+		}
+	}
+	return ""
+}
+
+func truncateForPreview(value string) string {
+	const limit = 120
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }
 
 func queryValue(r *http.Request, names ...string) string {
