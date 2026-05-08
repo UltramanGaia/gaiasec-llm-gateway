@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -95,18 +93,18 @@ func (h *LogHandler) GetInferredTraces(w http.ResponseWriter, r *http.Request) {
 		limit = maxTraceLimit
 	}
 
-	windowMinutes := queryInt(r, defaultTraceWindowMinutes, "window_minutes")
-	if windowMinutes <= 0 {
-		windowMinutes = defaultTraceWindowMinutes
-	}
-
 	includeSteps := queryBool(r, "include_steps")
 	minSteps := queryInt(r, 2, "min_steps")
 	if minSteps <= 0 {
 		minSteps = 2
 	}
 
-	var rows []inferredTraceRow
+	if err := h.materializeRecentInferenceLogs(limit); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var rows []materializedTraceRow
 	if err := h.DB.
 		Model(&models.RequestLog{}).
 		Select(`
@@ -115,11 +113,18 @@ func (h *LogHandler) GetInferredTraces(w http.ResponseWriter, r *http.Request) {
 			model_name,
 			backend_model_name,
 			response_time,
-			request,
-			COALESCE(LENGTH(request), 0) AS request_bytes,
-			COALESCE(LENGTH(response), 0) AS response_bytes
+			inferred_trace_key,
+			inferred_parent_id,
+			inferred_request_key,
+			inferred_root_key,
+			inferred_match_reason,
+			inferred_confidence,
+			inferred_message_count,
+			inferred_preview,
+			COALESCE(NULLIF(request_bytes, 0), LENGTH(request), 0) AS request_bytes,
+			COALESCE(NULLIF(response_bytes, 0), LENGTH(response), 0) AS response_bytes
 		`).
-		Where("request IS NOT NULL AND request <> ''").
+		Where("inferred_trace_key <> '' AND inferred_message_count > 0").
 		Order("created_at DESC, id DESC").
 		Limit(limit).
 		Scan(&rows).Error; err != nil {
@@ -127,22 +132,7 @@ func (h *LogHandler) GetInferredTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
-			return rows[i].ID < rows[j].ID
-		}
-		return rows[i].CreatedAt.Before(rows[j].CreatedAt)
-	})
-
-	features := make([]inferredLogFeature, 0, len(rows))
-	for _, row := range rows {
-		if feature, ok := buildInferredLogFeature(row); ok {
-			features = append(features, feature)
-		}
-	}
-
-	edges := inferRequestEdges(features, time.Duration(windowMinutes)*time.Minute)
-	traces := buildInferredTraces(features, edges, minSteps, includeSteps)
+	traces := buildMaterializedInferredTraces(rows, minSteps, includeSteps)
 
 	response := InferredTraceResponse{
 		Total:  int64(len(traces)),
@@ -150,6 +140,169 @@ func (h *LogHandler) GetInferredTraces(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (h *LogHandler) materializeRecentInferenceLogs(limit int) error {
+	var missing []models.RequestLog
+	if err := h.DB.
+		Model(&models.RequestLog{}).
+		Select("id, created_at, request, response, stream_response").
+		Where("request IS NOT NULL AND request <> '' AND (inferred_request_key = '' OR inferred_request_key IS NULL)").
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Find(&missing).Error; err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	logs := make([]*models.RequestLog, 0, len(missing))
+	for index := range missing {
+		reqLog := &missing[index]
+		reqLog.PrepareInferenceMetadata()
+		if reqLog.InferredRequestKey == "" {
+			continue
+		}
+		if err := h.DB.Model(&models.RequestLog{}).
+			Where("id = ?", reqLog.ID).
+			Updates(map[string]interface{}{
+				"request_bytes":          reqLog.RequestBytes,
+				"response_bytes":         reqLog.ResponseBytes,
+				"stream_bytes":           reqLog.StreamBytes,
+				"inferred_trace_key":     reqLog.InferredTraceKey,
+				"inferred_request_key":   reqLog.InferredRequestKey,
+				"inferred_root_key":      reqLog.InferredRootKey,
+				"inferred_confidence":    reqLog.InferredConfidence,
+				"inferred_message_count": reqLog.InferredMessageCount,
+				"inferred_preview":       reqLog.InferredPreview,
+			}).Error; err != nil {
+			return err
+		}
+		logs = append(logs, reqLog)
+	}
+
+	writer := &AsyncLogWriter{db: h.DB}
+	writer.resolveInferenceLinks(logs)
+	return nil
+}
+
+type materializedTraceRow struct {
+	ID                   uint
+	CreatedAt            time.Time
+	ModelName            string
+	BackendModelName     string
+	ResponseTime         int64
+	InferredTraceKey     string
+	InferredParentID     uint
+	InferredRequestKey   string
+	InferredRootKey      string
+	InferredMatchReason  string
+	InferredConfidence   float64
+	InferredMessageCount int
+	InferredPreview      string
+	RequestBytes         int
+	ResponseBytes        int
+}
+
+func buildMaterializedInferredTraces(rows []materializedTraceRow, minSteps int, includeSteps bool) []InferredTrace {
+	grouped := make(map[string][]materializedTraceRow)
+	for _, row := range rows {
+		if row.InferredTraceKey == "" {
+			continue
+		}
+		grouped[row.InferredTraceKey] = append(grouped[row.InferredTraceKey], row)
+	}
+
+	traces := make([]InferredTrace, 0, len(grouped))
+	for traceKey, steps := range grouped {
+		if len(steps) < minSteps {
+			continue
+		}
+		sort.Slice(steps, func(i, j int) bool {
+			if steps[i].CreatedAt.Equal(steps[j].CreatedAt) {
+				return steps[i].ID < steps[j].ID
+			}
+			return steps[i].CreatedAt.Before(steps[j].CreatedAt)
+		})
+
+		modelSet := make(map[string]bool)
+		backendSet := make(map[string]bool)
+		confidenceSum := 0.0
+		edgeCount := 0
+		traceSteps := make([]InferredTraceStep, 0, len(steps))
+
+		root := steps[0]
+		for _, step := range steps {
+			if step.InferredParentID == 0 {
+				root = step
+				break
+			}
+		}
+
+		for _, step := range steps {
+			if step.ModelName != "" {
+				modelSet[step.ModelName] = true
+			}
+			if step.BackendModelName != "" {
+				backendSet[step.BackendModelName] = true
+			}
+
+			stepConfidence := step.InferredConfidence
+			if stepConfidence == 0 {
+				stepConfidence = 1
+			}
+			if step.InferredParentID != 0 {
+				confidenceSum += stepConfidence
+				edgeCount++
+			}
+
+			if includeSteps {
+				traceSteps = append(traceSteps, InferredTraceStep{
+					ID:               step.ID,
+					ParentID:         step.InferredParentID,
+					CreatedAt:        step.CreatedAt,
+					ModelName:        step.ModelName,
+					BackendModelName: step.BackendModelName,
+					ResponseTime:     step.ResponseTime,
+					MessageCount:     step.InferredMessageCount,
+					RequestBytes:     step.RequestBytes,
+					ResponseBytes:    step.ResponseBytes,
+					RequestKey:       shortDigest(step.InferredRequestKey),
+					RootKey:          shortDigest(step.InferredRootKey),
+					MatchReason:      step.InferredMatchReason,
+					Confidence:       stepConfidence,
+					Preview:          step.InferredPreview,
+				})
+			}
+		}
+
+		confidence := 1.0
+		if edgeCount > 0 {
+			confidence = confidenceSum / float64(edgeCount)
+		}
+		startAt := steps[0].CreatedAt
+		endAt := steps[len(steps)-1].CreatedAt
+
+		traces = append(traces, InferredTrace{
+			TraceKey:     traceKey,
+			RootLogID:    root.ID,
+			StepCount:    len(steps),
+			Confidence:   confidence,
+			StartAt:      startAt,
+			EndAt:        endAt,
+			DurationMS:   endAt.Sub(startAt).Milliseconds(),
+			ModelNames:   sortedKeys(modelSet),
+			BackendNames: sortedKeys(backendSet),
+			Preview:      root.InferredPreview,
+			Steps:        traceSteps,
+		})
+	}
+
+	sort.Slice(traces, func(i, j int) bool {
+		return traces[i].EndAt.After(traces[j].EndAt)
+	})
+	return traces
 }
 
 func queryInt(r *http.Request, fallback int, names ...string) int {
@@ -170,198 +323,28 @@ func queryBool(r *http.Request, names ...string) bool {
 }
 
 func buildInferredLogFeature(row inferredTraceRow) (inferredLogFeature, bool) {
-	systemItems, messages := extractRequestMessages(row.Request)
-	if len(messages) == 0 {
+	metadata, ok := models.BuildRequestTraceMetadata(row.Request)
+	if !ok {
 		return inferredLogFeature{}, false
 	}
 
-	canonical := map[string]interface{}{"messages": messages}
-	if len(systemItems) > 0 {
-		canonical["system"] = systemItems
-	}
-
-	rootParts := make([]interface{}, 0, len(systemItems)+1)
-	for _, item := range systemItems {
-		rootParts = append(rootParts, item)
-	}
-	if firstUser := firstUserMessage(messages); firstUser != nil {
-		rootParts = append(rootParts, firstUser)
-	}
-
-	prefixes := make([]prefixDigest, 0, len(messages)-1)
-	for i := 1; i < len(messages); i++ {
-		prefix := map[string]interface{}{"messages": messages[:i]}
-		if len(systemItems) > 0 {
-			prefix["system"] = systemItems
-		}
-		prefixes = append(prefixes, prefixDigest{Length: i, Key: digestCanonical(prefix)})
+	prefixes := make([]prefixDigest, 0, len(metadata.PrefixKeys))
+	for _, prefix := range metadata.PrefixKeys {
+		prefixes = append(prefixes, prefixDigest{Length: prefix.Length, Key: prefix.Key})
 	}
 
 	return inferredLogFeature{
 		inferredTraceRow: row,
-		MessageCount:     len(messages),
-		RequestKey:       digestCanonical(canonical),
-		RootKey:          digestCanonical(rootParts),
+		MessageCount:     metadata.MessageCount,
+		RequestKey:       metadata.RequestKey,
+		RootKey:          metadata.RootKey,
 		PrefixKeys:       prefixes,
-		Preview:          inferredPreview(messages),
+		Preview:          metadata.Preview,
 	}, true
 }
 
-func extractRequestMessages(request string) ([]interface{}, []interface{}) {
-	var payload map[string]interface{}
-	if err := json.Unmarshal([]byte(request), &payload); err != nil {
-		return nil, nil
-	}
-
-	systemItems := make([]interface{}, 0, 1)
-	if system, ok := payload["system"]; ok && system != nil {
-		systemItems = append(systemItems, map[string]interface{}{
-			"role":    "system",
-			"content": normalizeTraceValue(system),
-		})
-	}
-
-	messages := make([]interface{}, 0)
-	if rawMessages, ok := payload["messages"].([]interface{}); ok {
-		for _, item := range rawMessages {
-			messages = append(messages, normalizeTraceMessage(item))
-		}
-	}
-
-	if len(messages) == 0 {
-		if prompt, ok := payload["prompt"]; ok && prompt != nil {
-			messages = append(messages, map[string]interface{}{
-				"role":    "user",
-				"content": normalizeTraceValue(prompt),
-			})
-		}
-	}
-
-	if len(messages) > 0 {
-		if first, ok := messages[0].(map[string]interface{}); ok {
-			role, _ := first["role"].(string)
-			if role == "system" || role == "developer" {
-				systemItems = append(systemItems, first)
-			}
-		}
-	}
-
-	return systemItems, messages
-}
-
-func normalizeTraceMessage(value interface{}) interface{} {
-	message, ok := value.(map[string]interface{})
-	if !ok {
-		return map[string]interface{}{"content": normalizeTraceValue(value)}
-	}
-
-	keepKeys := []string{"role", "name", "content", "tool_calls", "tool_call_id", "type"}
-	normalized := make(map[string]interface{}, len(keepKeys))
-	for _, key := range keepKeys {
-		if field, ok := message[key]; ok {
-			normalized[key] = normalizeTraceValue(field)
-		}
-	}
-	return normalized
-}
-
-func normalizeTraceValue(value interface{}) interface{} {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case string:
-		return strings.Join(strings.Fields(strings.TrimSpace(typed)), " ")
-	case []interface{}:
-		items := make([]interface{}, 0, len(typed))
-		for _, item := range typed {
-			items = append(items, normalizeTraceValue(item))
-		}
-		return items
-	case map[string]interface{}:
-		ignored := map[string]bool{
-			"id":       true,
-			"created":  true,
-			"model":    true,
-			"usage":    true,
-			"logprobs": true,
-		}
-		normalized := make(map[string]interface{}, len(typed))
-		for key, field := range typed {
-			if ignored[key] {
-				continue
-			}
-			normalized[key] = normalizeTraceValue(field)
-		}
-		return normalized
-	default:
-		return typed
-	}
-}
-
-func digestCanonical(value interface{}) string {
-	data, _ := json.Marshal(value)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
 func shortDigest(value string) string {
-	if len(value) <= 16 {
-		return value
-	}
-	return value[:16]
-}
-
-func firstUserMessage(messages []interface{}) interface{} {
-	for _, item := range messages {
-		message, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if role, _ := message["role"].(string); role == "user" {
-			return item
-		}
-	}
-	if len(messages) == 0 {
-		return nil
-	}
-	return messages[0]
-}
-
-func inferredPreview(messages []interface{}) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, ok := messages[i].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if role, _ := message["role"].(string); role != "user" {
-			continue
-		}
-		if text := traceContentPreview(message["content"]); text != "" {
-			return truncateForPreview(text)
-		}
-	}
-	return ""
-}
-
-func traceContentPreview(value interface{}) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case []interface{}:
-		for i := len(typed) - 1; i >= 0; i-- {
-			if text := traceContentPreview(typed[i]); text != "" {
-				return text
-			}
-		}
-	case map[string]interface{}:
-		if text, ok := typed["text"].(string); ok {
-			return text
-		}
-		if text, ok := typed["content"].(string); ok {
-			return text
-		}
-	}
-	return ""
+	return models.ShortDigest(value)
 }
 
 func inferRequestEdges(features []inferredLogFeature, window time.Duration) map[uint]inferredEdge {

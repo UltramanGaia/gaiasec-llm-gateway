@@ -146,9 +146,9 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 			avg_token_latency,
 			active_requests,
 			SUBSTR(request, 1, 4096) AS request_preview_source,
-			COALESCE(LENGTH(request), 0) AS request_bytes,
-			COALESCE(LENGTH(response), 0) AS response_bytes,
-			COALESCE(LENGTH(stream_response), 0) AS stream_bytes
+			COALESCE(NULLIF(request_bytes, 0), LENGTH(request), 0) AS request_bytes,
+			COALESCE(NULLIF(response_bytes, 0), LENGTH(response), 0) AS response_bytes,
+			COALESCE(NULLIF(stream_bytes, 0), LENGTH(stream_response), 0) AS stream_bytes
 		`).
 		Order("created_at DESC").
 		Offset(offset).

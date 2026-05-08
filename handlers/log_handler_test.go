@@ -136,8 +136,9 @@ func TestGetInferredTracesReturnsLinkedSteps(t *testing.T) {
 		`{"messages":[{"role":"system","content":"be helpful"},{"role":"user","content":"start task"}]}`,
 		`{"messages":[{"role":"system","content":"be helpful"},{"role":"user","content":"start task"},{"role":"assistant","content":"ok"},{"role":"user","content":"continue"}]}`,
 	}
+	created := make([]models.RequestLog, 0, len(requests))
 	for index, body := range requests {
-		if err := db.Create(&models.RequestLog{
+		entry := models.RequestLog{
 			CreatedAt:        baseTime.Add(time.Duration(index) * time.Second),
 			UpdatedAt:        baseTime.Add(time.Duration(index) * time.Second),
 			ModelName:        "auto",
@@ -145,9 +146,19 @@ func TestGetInferredTracesReturnsLinkedSteps(t *testing.T) {
 			Request:          body,
 			Response:         `{"ok":true}`,
 			ResponseTime:     int64(100 + index),
-		}).Error; err != nil {
+		}
+		if err := db.Create(&entry).Error; err != nil {
 			t.Fatalf("create request log: %v", err)
 		}
+		created = append(created, entry)
+	}
+	if err := db.Model(&models.RequestLog{}).Where("id = ?", created[1].ID).Updates(map[string]interface{}{
+		"inferred_trace_key":    created[0].InferredTraceKey,
+		"inferred_parent_id":    created[0].ID,
+		"inferred_match_reason": "prefix:2",
+		"inferred_confidence":   0.98,
+	}).Error; err != nil {
+		t.Fatalf("link request logs: %v", err)
 	}
 
 	recorder := httptest.NewRecorder()
@@ -171,5 +182,46 @@ func TestGetInferredTracesReturnsLinkedSteps(t *testing.T) {
 	}
 	if trace.Steps[1].ParentID != trace.Steps[0].ID {
 		t.Fatalf("expected linked steps, got parent=%d first=%d", trace.Steps[1].ParentID, trace.Steps[0].ID)
+	}
+}
+
+func TestAsyncLogWriterMaterializesInferenceLinks(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.RequestLog{}); err != nil {
+		t.Fatalf("migrate request logs: %v", err)
+	}
+
+	writer := &AsyncLogWriter{db: db}
+	first := &models.RequestLog{
+		ModelName: "auto",
+		Request:   `{"messages":[{"role":"system","content":"be helpful"},{"role":"user","content":"start task"}]}`,
+		Response:  `{"ok":true}`,
+	}
+	second := &models.RequestLog{
+		ModelName: "auto",
+		Request:   `{"messages":[{"role":"system","content":"be helpful"},{"role":"user","content":"start task"},{"role":"assistant","content":"ok"},{"role":"user","content":"continue"}]}`,
+		Response:  `{"ok":true}`,
+	}
+
+	writer.writeBatch([]*models.RequestLog{first, second})
+
+	var logs []models.RequestLog
+	if err := db.Order("id ASC").Find(&logs).Error; err != nil {
+		t.Fatalf("load logs: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("expected two logs, got %d", len(logs))
+	}
+	if logs[0].InferredTraceKey == "" || logs[0].InferredRequestKey == "" || logs[0].InferredPreview == "" {
+		t.Fatalf("expected first log inference fields, got %+v", logs[0])
+	}
+	if logs[1].InferredParentID != logs[0].ID {
+		t.Fatalf("expected second parent %d, got %d", logs[0].ID, logs[1].InferredParentID)
+	}
+	if logs[1].InferredTraceKey != logs[0].InferredTraceKey || logs[1].InferredMatchReason != "prefix:2" {
+		t.Fatalf("unexpected second inference link: trace=%q reason=%q", logs[1].InferredTraceKey, logs[1].InferredMatchReason)
 	}
 }
