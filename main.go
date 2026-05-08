@@ -406,6 +406,14 @@ func main() {
 		}
 	})
 
+	mux.HandleFunc("/api/request-logs/inferred-traces", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			logHandler.GetInferredTraces(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	mux.HandleFunc("/api/request-logs/", func(w http.ResponseWriter, r *http.Request) {
 		pathParts := strings.Split(r.URL.Path, "/")
 		if len(pathParts) >= 4 {

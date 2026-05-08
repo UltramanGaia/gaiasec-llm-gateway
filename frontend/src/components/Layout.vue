@@ -18,6 +18,9 @@
           <el-menu-item index="/logs" @click="router.push('/logs')">
             <el-icon><DocumentChecked /></el-icon>请求日志
           </el-menu-item>
+          <el-menu-item index="/traces" @click="router.push('/traces')">
+            <el-icon><Share /></el-icon>推断会话
+          </el-menu-item>
         </el-menu>
       </div>
     </el-header>
@@ -30,7 +33,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Connection, Cpu, DocumentChecked } from '@element-plus/icons-vue';
+import { Connection, Cpu, DocumentChecked, Share } from '@element-plus/icons-vue';
 
 const route = useRoute();
 const router = useRouter();
