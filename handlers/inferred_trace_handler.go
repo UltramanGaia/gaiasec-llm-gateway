@@ -93,14 +93,30 @@ func (h *LogHandler) GetInferredTraces(w http.ResponseWriter, r *http.Request) {
 		limit = maxTraceLimit
 	}
 
+	windowMinutes := queryInt(r, defaultTraceWindowMinutes, "window_minutes")
+	if windowMinutes <= 0 {
+		windowMinutes = defaultTraceWindowMinutes
+	}
+
 	includeSteps := queryBool(r, "include_steps")
 	minSteps := queryInt(r, 2, "min_steps")
 	if minSteps <= 0 {
 		minSteps = 2
 	}
 
+	if !h.hasMaterializedInferenceColumns() {
+		traces, ok := h.getLegacyInferredTraces(w, limit, windowMinutes, minSteps, includeSteps)
+		if ok {
+			h.writeInferredTraceResponse(w, traces)
+		}
+		return
+	}
+
 	if err := h.materializeRecentInferenceLogs(limit); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		traces, ok := h.getLegacyInferredTraces(w, limit, windowMinutes, minSteps, includeSteps)
+		if ok {
+			h.writeInferredTraceResponse(w, traces)
+		}
 		return
 	}
 
@@ -128,18 +144,87 @@ func (h *LogHandler) GetInferredTraces(w http.ResponseWriter, r *http.Request) {
 		Order("created_at DESC, id DESC").
 		Limit(limit).
 		Scan(&rows).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		traces, ok := h.getLegacyInferredTraces(w, limit, windowMinutes, minSteps, includeSteps)
+		if ok {
+			h.writeInferredTraceResponse(w, traces)
+		}
 		return
 	}
 
 	traces := buildMaterializedInferredTraces(rows, minSteps, includeSteps)
 
+	h.writeInferredTraceResponse(w, traces)
+}
+
+func (h *LogHandler) hasMaterializedInferenceColumns() bool {
+	migrator := h.DB.Migrator()
+	required := []string{
+		"inferred_trace_key",
+		"inferred_parent_id",
+		"inferred_request_key",
+		"inferred_root_key",
+		"inferred_match_reason",
+		"inferred_confidence",
+		"inferred_message_count",
+		"inferred_preview",
+		"request_bytes",
+		"response_bytes",
+	}
+	for _, column := range required {
+		if !migrator.HasColumn(&models.RequestLog{}, column) {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *LogHandler) writeInferredTraceResponse(w http.ResponseWriter, traces []InferredTrace) {
 	response := InferredTraceResponse{
 		Total:  int64(len(traces)),
 		Traces: traces,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (h *LogHandler) getLegacyInferredTraces(w http.ResponseWriter, limit int, windowMinutes int, minSteps int, includeSteps bool) ([]InferredTrace, bool) {
+	var rows []inferredTraceRow
+	if err := h.DB.
+		Model(&models.RequestLog{}).
+		Select(`
+			id,
+			created_at,
+			model_name,
+			backend_model_name,
+			response_time,
+			request,
+			COALESCE(LENGTH(request), 0) AS request_bytes,
+			COALESCE(LENGTH(response), 0) AS response_bytes
+		`).
+		Where("request IS NOT NULL AND request <> ''").
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Scan(&rows).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].CreatedAt.Before(rows[j].CreatedAt)
+	})
+
+	features := make([]inferredLogFeature, 0, len(rows))
+	for _, row := range rows {
+		if feature, ok := buildInferredLogFeature(row); ok {
+			features = append(features, feature)
+		}
+	}
+
+	edges := inferRequestEdges(features, time.Duration(windowMinutes)*time.Minute)
+	return buildInferredTraces(features, edges, minSteps, includeSteps), true
 }
 
 func (h *LogHandler) materializeRecentInferenceLogs(limit int) error {
