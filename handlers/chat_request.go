@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -51,7 +52,7 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.Raw
 	return body, requestBody, modelName, userToken, isStream, nil
 }
 
-func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[string]json.RawMessage, config models.ModelConfig, isStream bool) (*http.Response, error) {
+func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Header, requestBody map[string]json.RawMessage, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	updatedBody, err := buildProviderRequestBody(requestBody, config)
 	if err != nil {
 		log.WithError(err).Error("Provider request build failed")
@@ -67,7 +68,7 @@ func (h *ChatHandler) sendProviderRequest(headers http.Header, requestBody map[s
 		"body_length": len(updatedBody),
 	}).Info("Dispatching provider request")
 
-	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(updatedBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(updatedBody))
 	if err != nil {
 		log.WithError(err).WithField("url", providerURL).Error("Provider request creation failed")
 		return nil, err

@@ -191,6 +191,126 @@ func TestDispatchProviderRequestFailsOverToNextBackend(t *testing.T) {
 	}
 }
 
+func TestDispatchProviderRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	originalMaxRetries := providerBadGatewayMaxRetries
+	originalRetryDelay := providerBadGatewayRetryDelay
+	defer func() {
+		providerBadGatewayMaxRetries = originalMaxRetries
+		providerBadGatewayRetryDelay = originalRetryDelay
+	}()
+	providerBadGatewayMaxRetries = 2
+	providerBadGatewayRetryDelay = 0
+
+	requestCount := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if requestCount <= 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":"temporary bad gateway"}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp-1","object":"chat.completion"}`))
+	}))
+	defer provider.Close()
+
+	handler := &ChatHandler{}
+	config := models.ModelConfig{
+		ID:         1,
+		Name:       "auto-retry",
+		ModelName:  "backend-a",
+		APIBaseURL: provider.URL,
+		APIKey:     "key-a",
+	}
+	requestBody := mustRawMessageMap(t, map[string]interface{}{
+		"model":    "auto-retry",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	})
+
+	resp, selectedConfig, lease, attempts, err := handler.dispatchProviderRequest(context.Background(), http.Header{}, requestBody, "auto-retry", []models.ModelConfig{config}, false)
+	if err != nil {
+		t.Fatalf("dispatchProviderRequest returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected retry to recover with 200, got %d", resp.StatusCode)
+	}
+	if selectedConfig.ID != config.ID {
+		t.Fatalf("expected selected backend %d, got %d", config.ID, selectedConfig.ID)
+	}
+	if requestCount != 3 {
+		t.Fatalf("expected 3 backend requests, got %d", requestCount)
+	}
+	if len(attempts) != 1 || attempts[0].StatusCode != http.StatusOK || attempts[0].RetryCount != 2 {
+		t.Fatalf("unexpected attempts: %#v", attempts)
+	}
+}
+
+func TestDispatchAnthropicRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	originalMaxRetries := providerBadGatewayMaxRetries
+	originalRetryDelay := providerBadGatewayRetryDelay
+	defer func() {
+		providerBadGatewayMaxRetries = originalMaxRetries
+		providerBadGatewayRetryDelay = originalRetryDelay
+	}()
+	providerBadGatewayMaxRetries = 2
+	providerBadGatewayRetryDelay = 0
+
+	requestCount := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path != "/messages" {
+			t.Fatalf("expected /messages path, got %s", r.URL.Path)
+		}
+		if requestCount <= 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":"temporary bad gateway"}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message"}`))
+	}))
+	defer provider.Close()
+
+	handler := &ChatHandler{}
+	config := models.ModelConfig{
+		ID:         1,
+		Name:       "claude-retry",
+		ModelName:  "backend-claude",
+		APIBaseURL: provider.URL,
+		APIKey:     "key-a",
+	}
+	body := []byte(`{"model":"claude-retry","messages":[{"role":"user","content":"hello"}]}`)
+
+	resp, selectedConfig, lease, attempts, err := handler.dispatchAnthropicRequest(context.Background(), http.Header{}, body, "claude-retry", []models.ModelConfig{config}, false)
+	if err != nil {
+		t.Fatalf("dispatchAnthropicRequest returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected retry to recover with 200, got %d", resp.StatusCode)
+	}
+	if selectedConfig.ID != config.ID {
+		t.Fatalf("expected selected backend %d, got %d", config.ID, selectedConfig.ID)
+	}
+	if requestCount != 3 {
+		t.Fatalf("expected 3 backend requests, got %d", requestCount)
+	}
+	if len(attempts) != 1 || attempts[0].StatusCode != http.StatusOK || attempts[0].RetryCount != 2 {
+		t.Fatalf("unexpected attempts: %#v", attempts)
+	}
+}
+
 func TestBuildAttemptOrderPrefersLowerAdaptiveScore(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 

@@ -25,6 +25,7 @@ type providerAttempt struct {
 	StatusCode   int
 	ResponseTime int64
 	ActiveCount  int
+	RetryCount   int
 	Error        string
 }
 
@@ -43,6 +44,11 @@ var (
 
 var (
 	backendCapacityRetryInterval = 100 * time.Millisecond
+)
+
+var (
+	providerBadGatewayMaxRetries = 10
+	providerBadGatewayRetryDelay = 200 * time.Millisecond
 )
 
 func (h *ChatHandler) getModelConfigs(modelName string) ([]models.ModelConfig, error) {
@@ -197,13 +203,16 @@ func (h *ChatHandler) dispatchProviderRequest(ctx context.Context, headers http.
 				continue
 			}
 			attemptStart := time.Now()
-			resp, err := h.sendProviderRequest(headers, requestBody, config, isStream)
 			attempt := providerAttempt{
 				ConfigID:     config.ID,
 				BackendModel: config.ModelName,
 				APIBaseURL:   config.APIBaseURL,
 				ActiveCount:  lease.ActiveRequestsOnStart(),
 			}
+			resp, retries, err := h.sendWithBadGatewayRetry(ctx, attempt, func() (*http.Response, error) {
+				return h.sendProviderRequest(ctx, headers, requestBody, config, isStream)
+			})
+			attempt.RetryCount = retries
 
 			if err != nil {
 				attempt.Error = err.Error()
@@ -261,4 +270,63 @@ func (h *ChatHandler) dispatchProviderRequest(ctx context.Context, headers http.
 			return nil, models.ModelConfig{}, nil, attempts, err
 		}
 	}
+}
+
+func (h *ChatHandler) sendWithBadGatewayRetry(ctx context.Context, attempt providerAttempt, send func() (*http.Response, error)) (*http.Response, int, error) {
+	retries := 0
+
+	for {
+		resp, err := send()
+		if err != nil {
+			return nil, retries, err
+		}
+
+		if resp.StatusCode != http.StatusBadGateway || retries >= providerBadGatewayMaxRetries {
+			return resp, retries, nil
+		}
+
+		retries++
+		drainAndCloseResponseBody(resp)
+
+		log.WithFields(log.Fields{
+			"config_id":     attempt.ConfigID,
+			"backend_model": attempt.BackendModel,
+			"api_base_url":  attempt.APIBaseURL,
+			"retry":         retries,
+			"max_retries":   providerBadGatewayMaxRetries,
+		}).Warn("Provider returned 502, retrying request")
+
+		if err := waitForProviderRetry(ctx, providerBadGatewayRetryDelay); err != nil {
+			return nil, retries, err
+		}
+	}
+}
+
+func waitForProviderRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func drainAndCloseResponseBody(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512*1024))
+	_ = resp.Body.Close()
 }

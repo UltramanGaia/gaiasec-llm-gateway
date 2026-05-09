@@ -318,13 +318,16 @@ func (h *ChatHandler) dispatchAnthropicRequest(ctx context.Context, headers http
 				continue
 			}
 			attemptStart := time.Now()
-			resp, err := h.sendAnthropicRequest(headers, body, config, isStream)
 			attempt := providerAttempt{
 				ConfigID:     config.ID,
 				BackendModel: config.ModelName,
 				APIBaseURL:   config.APIBaseURL,
 				ActiveCount:  lease.ActiveRequestsOnStart(),
 			}
+			resp, retries, err := h.sendWithBadGatewayRetry(ctx, attempt, func() (*http.Response, error) {
+				return h.sendAnthropicRequest(ctx, headers, body, config, isStream)
+			})
+			attempt.RetryCount = retries
 
 			if err != nil {
 				attempt.Error = err.Error()
@@ -384,7 +387,7 @@ func (h *ChatHandler) dispatchAnthropicRequest(ctx context.Context, headers http
 	}
 }
 
-func (h *ChatHandler) sendAnthropicRequest(headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
+func (h *ChatHandler) sendAnthropicRequest(ctx context.Context, headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	providerURL := buildAnthropicMessagesURL(config.APIBaseURL)
 
 	log.WithFields(log.Fields{
@@ -394,7 +397,7 @@ func (h *ChatHandler) sendAnthropicRequest(headers http.Header, body []byte, con
 		"body_length": len(body),
 	}).Info("Dispatching Anthropic provider request")
 
-	req, err := http.NewRequest("POST", providerURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(body))
 	if err != nil {
 		log.WithError(err).WithField("url", providerURL).Error("Anthropic request creation failed")
 		return nil, err
