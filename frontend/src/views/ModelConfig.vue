@@ -65,22 +65,30 @@
         </div>
       </el-card>
 
-      <div v-loading="loading" class="cards-grid">
-        <el-empty v-if="!filteredConfigs.length && !loading" description="暂无模型配置" />
-        <el-card
-          v-for="config in filteredConfigs"
-          :key="config.id"
-          class="model-card"
-          shadow="hover"
-          :class="{ 'card-disabled': !config.enabled }"
+      <div v-loading="loading" class="alias-groups">
+        <el-empty v-if="!aliasGroups.length && !loading" description="暂无模型配置" />
+        <section
+          v-for="group in aliasGroups"
+          :key="group.alias"
+          class="alias-group"
         >
+          <div class="alias-pill">
+            <span class="alias-pill-value">{{ group.alias }}</span>
+          </div>
+          <div class="cards-row">
+            <el-card
+              v-for="config in group.configs"
+              :key="config.id"
+              class="model-card"
+              shadow="hover"
+              :class="{ 'card-disabled': !config.enabled }"
+            >
           <template #header>
             <div class="card-header">
               <div class="header-left">
                 <div class="model-icon"><el-icon><Cpu /></el-icon></div>
                 <div class="model-info">
-                  <div class="model-name">{{ config.name }}</div>
-                  <div class="model-type">{{ config.modelName }}</div>
+                  <div class="model-name">{{ config.modelName }}</div>
                 </div>
               </div>
               <el-tag :type="config.enabled ? 'success' : 'danger'" size="small">{{ config.enabled ? '启用' : '禁用' }}</el-tag>
@@ -102,44 +110,36 @@
             </div>
 
             <div class="core-metrics">
-              <div class="metrics-row">
-                <div class="priority-item">
+              <div class="metrics-grid">
+                <div class="metric-priority">
                   <div class="metric-label-small">优先级</div>
                   <div class="priority-value-small" :class="getPriorityClass(config.priority)">{{ config.priority }}</div>
                 </div>
-                <div class="concurrency-item">
-                  <div class="metric-label-small">并发使用</div>
-                  <div class="concurrency-ratio-small">
-                    {{ getStat(config)?.activeRequests ?? 0 }} / {{ config.maxConcurrency === 0 ? '∞' : config.maxConcurrency }}
+                <div class="metric-concurrency">
+                  <div class="metric-label-small">并发</div>
+                  <div class="concurrency-info">
+                    <span class="metric-value-compact">{{ getStat(config)?.activeRequests ?? 0 }}/{{ config.maxConcurrency === 0 ? '∞' : config.maxConcurrency }}</span>
+                    <span v-if="getWaitingRequests(config) > 0" class="queue-text">({{ getWaitingRequests(config) }})</span>
                   </div>
-                  <div class="queue-ratio-small" :class="{ 'has-queue': getWaitingRequests(config) > 0 }">
-                    排队 {{ getWaitingRequests(config) }}
-                  </div>
-                  <el-progress :percentage="getConcurrencyPercent(config)" :color="getConcurrencyColor(config)" :stroke-width="8" :show-text="false" />
-                  <div class="concurrency-status-small">
-                    <el-tag size="small" :type="getConcurrencyTagType(config)">{{ getConcurrencyStatusText(config) }}</el-tag>
-                  </div>
+                  <el-progress :percentage="getConcurrencyPercent(config)" :color="getConcurrencyColor(config)" :stroke-width="5" :show-text="false" />
                 </div>
-              </div>
-            </div>
-
-            <div class="metrics-section">
-              <div class="metric-item">
-                <div class="metric-label">成功率</div>
-                <div class="metric-value success">{{ formatPercent(getStat(config)?.successRate) }}</div>
-              </div>
-              <div class="metric-item">
-                <div class="metric-label">首Token延迟</div>
-                <div class="metric-value warning">{{ formatLatency(getStat(config)?.avgFirstTokenLatency) }}</div>
-              </div>
-              <div class="metric-item">
-                <div class="metric-label">Token延迟</div>
-                <div class="metric-value primary">{{ formatLatency(getStat(config)?.avgTokenLatency) }}</div>
-              </div>
-              <div class="metric-item">
-                <div class="metric-label">调度分数</div>
-                <div class="metric-value" :style="{ color: getScoreColor(getStat(config)?.adaptiveRoutingScore) }">
-                  {{ formatScore(getStat(config)?.adaptiveRoutingScore) }}
+                <div class="metric-small metric-col-4">
+                  <div class="metric-label-small">首Token</div>
+                  <div class="metric-value-compact warning">{{ formatLatency(getStat(config)?.avgFirstTokenLatency) }}</div>
+                </div>
+                <div class="metric-small metric-col-5">
+                  <div class="metric-label-small">Token延迟</div>
+                  <div class="metric-value-compact primary">{{ formatLatency(getStat(config)?.avgTokenLatency) }}</div>
+                </div>
+                <div class="metric-small metric-col-4 metric-row-2">
+                  <div class="metric-label-small">成功率</div>
+                  <div class="metric-value-compact success">{{ formatPercent(getStat(config)?.successRate) }}</div>
+                </div>
+                <div class="metric-small metric-col-5 metric-row-2">
+                  <div class="metric-label-small">调度分数</div>
+                  <div class="metric-value-compact" :style="{ color: getScoreColor(getStat(config)?.adaptiveRoutingScore) }">
+                    {{ formatScore(getStat(config)?.adaptiveRoutingScore) }}
+                  </div>
                 </div>
               </div>
             </div>
@@ -161,7 +161,9 @@
               </el-tooltip>
             </div>
           </template>
-        </el-card>
+            </el-card>
+          </div>
+        </section>
       </div>
 
       <el-dialog :title="editingConfig ? '编辑模型配置' : '添加模型配置'" v-model="showAddDialog" width="600px" @close="handleDialogClose">
@@ -267,6 +269,44 @@ const filteredConfigs = computed(() => {
   if (filterStatus.value === 'enabled') result = result.filter(c => c.enabled);
   else if (filterStatus.value === 'disabled') result = result.filter(c => !c.enabled);
   return result.slice().sort((a, b) => a.priority - b.priority);
+});
+
+const aliasGroups = computed(() => {
+  const groups = new Map();
+  filteredConfigs.value.forEach((config) => {
+    const key = config.name || '未命名别名';
+    if (!groups.has(key)) {
+      groups.set(key, {
+        alias: key,
+        configs: [],
+        enabledCount: 0,
+        uniqueModelCount: 0,
+      });
+    }
+    const group = groups.get(key);
+    group.configs.push(config);
+    if (config.enabled) group.enabledCount += 1;
+  });
+  const aliasOrder = ['auto', 'max', 'pro', 'mini'];
+  const getAliasPriority = (alias) => {
+    const index = aliasOrder.indexOf(alias.toLowerCase());
+    return index === -1 ? aliasOrder.length : index;
+  };
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      configs: group.configs.slice().sort((a, b) => {
+        if (a.enabled !== b.enabled) return b.enabled ? 1 : -1;
+        return a.priority - b.priority || a.id - b.id;
+      }),
+      uniqueModelCount: new Set(group.configs.map(config => config.modelName)).size,
+    }))
+    .sort((a, b) => {
+      const pa = getAliasPriority(a.alias);
+      const pb = getAliasPriority(b.alias);
+      if (pa !== pb) return pa - pb;
+      return a.alias.localeCompare(b.alias);
+    });
 });
 
 const normalizeModelConfig = (config = {}) => ({
@@ -439,20 +479,6 @@ const getConcurrencyColor = (config) => {
   const p = getConcurrencyPercent(config);
   return p < 60 ? '#67c23a' : p < 80 ? '#e6a23c' : '#f56c6c';
 };
-const getConcurrencyTagType = (config) => {
-  if (getWaitingRequests(config) > 0) return 'danger';
-  const p = getConcurrencyPercent(config);
-  return p < 60 ? 'success' : p < 80 ? 'warning' : 'danger';
-};
-const getConcurrencyStatusText = (config) => {
-  if (getWaitingRequests(config) > 0) return '排队中';
-  if (config.maxConcurrency === 0) return '无限制';
-  const p = getConcurrencyPercent(config);
-  if (p >= 90) return '接近满载';
-  if (p >= 70) return '高负载';
-  if (p >= 40) return '中等负载';
-  return '低负载';
-};
 
 onMounted(() => {
   loadData();
@@ -473,40 +499,137 @@ onBeforeUnmount(() => { if (statsTimer) clearInterval(statsTimer); });
 .toolbar { display: flex; justify-content: space-between; align-items: center; }
 .toolbar-left { display: flex; align-items: center; }
 .toolbar-right { display: flex; gap: 12px; }
-.cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 20px; }
-.model-card { border-radius: 8px; transition: all 0.3s ease; }
-.model-card :deep(.el-card__header) { padding: 12px 16px; }
-.model-card :deep(.el-card__body) { padding: 12px 16px; }
-.model-card :deep(.el-card__footer) { padding: 10px 16px; }
+.alias-groups { display: flex; flex-direction: column; gap: 24px; }
+.alias-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top left, rgba(102, 126, 234, 0.15), transparent 32%),
+    linear-gradient(180deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.9) 100%);
+  border: 1px solid rgba(102, 126, 234, 0.2);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.28);
+}
+.alias-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.25) 0%, rgba(139, 92, 246, 0.25) 100%);
+  color: #e8eefc;
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  backdrop-filter: blur(6px);
+  align-self: stretch;
+}
+.alias-pill-value { font-size: 18px; font-weight: 700; color: #fff; text-shadow: 0 0 12px rgba(96, 165, 250, 0.5); }
+.cards-row { display: flex; gap: 12px; flex-wrap: wrap; flex: 1; }
+.group-stat {
+  min-width: 90px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  text-align: center;
+}
+.group-stat-value {
+  display: block;
+  font-size: 20px;
+  font-weight: 700;
+  color: #f8fbff;
+}
+.group-stat-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #9fb0ca;
+}
+.group-target-strip {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  margin-bottom: 18px;
+}
+.strip-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9fb0ca;
+  padding-top: 6px;
+}
+.target-chip-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.target-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.07) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(4px);
+}
+.target-chip.disabled { opacity: 0.55; }
+.target-chip-model { font-size: 13px; font-weight: 700; color: #eef4ff; }
+.target-chip-meta { font-size: 11px; color: #9fb0ca; }
+.model-card { width: 420px; border-radius: 8px; transition: all 0.3s ease; }
+.model-card :deep(.el-card__header) { padding: 8px 12px; }
+.model-card :deep(.el-card__body) { padding: 8px 12px; }
+.model-card :deep(.el-card__footer) { padding: 6px 12px; }
 .model-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.1); }
 .card-disabled { opacity: 0.7; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .header-left { display: flex; align-items: center; gap: 10px; }
 .model-icon { width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; color: white; font-size: 18px; }
-.model-name { font-size: 15px; font-weight: 600; color: var(--el-text-color-primary); margin-bottom: 2px; }
-.model-type { font-size: 12px; color: var(--el-text-color-secondary); }
-.info-item { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; }
+.model-name { font-size: 15px; font-weight: 600; color: var(--el-text-color-primary); }
+.info-item { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; }
 .info-icon { color: var(--el-text-color-secondary); font-size: 13px; flex-shrink: 0; }
 .info-text { color: var(--el-text-color-regular); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.core-metrics { margin: 10px 0; }
-.metrics-row { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
-.priority-item, .concurrency-item { padding: 8px 6px; background: var(--el-fill-color-light); border-radius: 6px; text-align: center; }
-.metric-label-small { font-size: 11px; color: var(--el-text-color-secondary); margin-bottom: 4px; }
+.core-metrics { margin: 6px 0; }
+.metrics-grid { display: grid; grid-template-columns: 70px 1fr 1fr 70px 70px; grid-template-rows: auto auto; gap: 6px 8px; }
+.metric-priority { grid-row: span 2; grid-column: 1; padding: 8px 6px; background: var(--el-fill-color-light); border-radius: 6px; text-align: center; display: flex; flex-direction: column; justify-content: center; }
+.metric-concurrency { grid-row: span 2; grid-column: 2 / span 2; padding: 8px; background: var(--el-fill-color-light); border-radius: 6px; display: flex; flex-direction: column; justify-content: center; align-items: stretch; }
+.metric-concurrency .metric-label-small { text-align: center; }
+.metric-concurrency :deep(.el-progress) { width: 100%; }
+.concurrency-info { text-align: center; margin-bottom: 6px; }
+.queue-text { font-size: 12px; font-weight: 600; color: #f56c6c; }
+.metric-small { padding: 6px 4px; background: var(--el-fill-color-light); border-radius: 6px; text-align: center; }
+.metric-col-4 { grid-column: 4; }
+.metric-col-5 { grid-column: 5; }
+.metric-row-2 { grid-row: 2; }
+.metric-label-small { font-size: 10px; color: var(--el-text-color-secondary); margin-bottom: 2px; }
 .priority-value-small { font-size: 16px; font-weight: bold; padding: 2px 6px; border-radius: 4px; display: inline-block; }
 .priority-value-small.priority-high { background: linear-gradient(135deg, #67c23a 0%, #85ce61 100%); color: white; }
 .priority-value-small.priority-medium { background: linear-gradient(135deg, #e6a23c 0%, #ebb563 100%); color: white; }
 .priority-value-small.priority-low { background: linear-gradient(135deg, #909399 0%, #a6a9ad 100%); color: white; }
-.concurrency-ratio-small { font-size: 12px; font-weight: bold; color: var(--el-text-color-primary); margin-bottom: 2px; }
-.queue-ratio-small { margin-bottom: 6px; text-align: center; font-size: 11px; color: var(--el-text-color-secondary); }
-.queue-ratio-small.has-queue { color: #f56c6c; font-weight: 600; }
-.concurrency-status-small { display: flex; justify-content: center; margin-top: 4px; }
-.metrics-section { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0; padding: 8px; background: var(--el-fill-color-lighter); border-radius: 6px; }
-.metric-item { text-align: center; }
-.metric-label { font-size: 10px; color: var(--el-text-color-secondary); margin-bottom: 2px; }
-.metric-value { font-size: 13px; font-weight: 600; color: var(--el-text-color-primary); }
-.metric-value.success { color: #67c23a; }
-.metric-value.warning { color: #e6a23c; }
-.metric-value.primary { color: #409eff; }
+.metric-value-compact { font-size: 12px; font-weight: 600; color: var(--el-text-color-primary); }
+.metric-value-compact.success { color: #67c23a; }
+.metric-value-compact.warning { color: #e6a23c; }
+.metric-value-compact.primary { color: #409eff; }
 .card-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .card-actions .el-button { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+
+@media (max-width: 1200px) {
+  .alias-group { flex-direction: column; }
+  .alias-pill { min-width: auto; width: 100%; min-height: auto; padding: 8px 12px; }
+  .cards-row { flex-direction: column; }
+  .model-card { width: 100%; }
+}
+
+@media (max-width: 768px) {
+  .page-container { padding: 12px; }
+  .toolbar { flex-direction: column; align-items: stretch; gap: 12px; }
+  .toolbar-left, .toolbar-right { flex-wrap: wrap; }
+  .group-target-strip { flex-direction: column; }
+  .metrics-grid { grid-template-columns: 60px 1fr 60px 60px; }
+}
 </style>
