@@ -332,6 +332,14 @@ func main() {
 		}
 	})
 
+	mux.HandleFunc("/api/model-configs/{id}/clone", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			modelConfigHandler.CloneModelConfig(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	mux.HandleFunc("/api/model-configs/{id}/reset-runtime", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			modelConfigHandler.ResetModelConfigRuntime(w, r)

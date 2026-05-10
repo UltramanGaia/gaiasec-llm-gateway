@@ -71,6 +71,10 @@
           v-for="group in aliasGroups"
           :key="group.alias"
           class="alias-group"
+          :class="{ 'alias-group-drop-target': dragTargetAlias === group.alias && canDropToAlias(group.alias) }"
+          @dragenter.prevent="handleGroupDragEnter(group)"
+          @dragover.prevent="handleGroupDragOver(group, $event)"
+          @drop.prevent="handleGroupDrop(group, $event)"
         >
           <div class="alias-pill">
             <span class="alias-pill-value">{{ group.alias }}</span>
@@ -81,7 +85,13 @@
               :key="config.id"
               class="model-card"
               shadow="hover"
-              :class="{ 'card-disabled': !config.enabled }"
+              :class="{
+                'card-disabled': !config.enabled,
+                'model-card-dragging': draggingConfig?.id === config.id,
+              }"
+              draggable="true"
+              @dragstart="handleDragStart(config, $event)"
+              @dragend="handleDragEnd"
             >
           <template #header>
             <div class="card-header">
@@ -91,7 +101,13 @@
                   <div class="model-name">{{ config.modelName }}</div>
                 </div>
               </div>
-              <el-tag :type="config.enabled ? 'success' : 'danger'" size="small">{{ config.enabled ? '启用' : '禁用' }}</el-tag>
+              <el-switch
+                :model-value="config.enabled"
+                inline-prompt
+                :active-text="'启用'"
+                :inactive-text="'禁用'"
+                @change="toggleConfigEnabled(config, $event)"
+              />
             </div>
           </template>
 
@@ -235,6 +251,8 @@ const providerStats = ref([]);
 const formRef = ref();
 const searchKeyword = ref('');
 const filterStatus = ref('');
+const draggingConfig = ref(null);
+const dragTargetAlias = ref('');
 let statsTimer = null;
 
 const defaultForm = () => ({
@@ -322,6 +340,19 @@ const normalizeModelConfig = (config = {}) => ({
   temperature: config.temperature ?? 0.7,
   description: config.description ?? '',
   enabled: config.enabled ?? true,
+});
+
+const buildModelConfigPayload = (config, overrides = {}) => ({
+  name: overrides.name ?? config.name,
+  model_name: overrides.modelName ?? config.modelName,
+  api_base_url: overrides.apiBaseUrl ?? config.apiBaseUrl,
+  max_tokens: overrides.maxTokens ?? config.maxTokens,
+  priority: overrides.priority ?? config.priority,
+  max_concurrency: overrides.maxConcurrency ?? config.maxConcurrency,
+  temperature: overrides.temperature ?? config.temperature,
+  description: overrides.description ?? config.description,
+  enabled: overrides.enabled ?? config.enabled,
+  ...(overrides.apiKey ? { api_key: overrides.apiKey } : {}),
 });
 
 const normalizeProviderStat = (stat = {}) => ({
@@ -418,21 +449,109 @@ const resetRuntime = async (config) => {
   }
 };
 
+const toggleConfigEnabled = async (config, enabled) => {
+  const previous = config.enabled;
+  config.enabled = enabled;
+  try {
+    const payload = buildModelConfigPayload(config, { enabled });
+    await api.put(`/model-configs/${config.id}`, payload);
+    ElMessage.success(`配置已${enabled ? '启用' : '禁用'}`);
+  } catch {
+    config.enabled = previous;
+    ElMessage.error('状态切换失败');
+  }
+};
+
+const canDropToAlias = (targetAlias) => {
+  if (!draggingConfig.value) return false;
+  return draggingConfig.value.name !== targetAlias;
+};
+
+const handleDragStart = (config, event) => {
+  draggingConfig.value = config;
+  dragTargetAlias.value = '';
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData('text/plain', String(config.id));
+  }
+};
+
+const handleDragEnd = () => {
+  draggingConfig.value = null;
+  dragTargetAlias.value = '';
+};
+
+const handleGroupDragEnter = (group) => {
+  if (canDropToAlias(group.alias)) {
+    dragTargetAlias.value = group.alias;
+  }
+};
+
+const handleGroupDragOver = (group, event) => {
+  if (!canDropToAlias(group.alias)) return;
+  dragTargetAlias.value = group.alias;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = event.ctrlKey || event.metaKey ? 'copy' : 'move';
+  }
+};
+
+const moveConfigToAlias = async (config, targetAlias) => {
+  const payload = buildModelConfigPayload(config, { name: targetAlias });
+  await api.put(`/model-configs/${config.id}`, payload);
+  ElMessage.success(`已移动到分组 ${targetAlias}`);
+  await loadData();
+};
+
+const cloneConfigToAlias = async (config, targetAlias) => {
+  await api.post(`/model-configs/${config.id}/clone`, { name: targetAlias });
+  ElMessage.success(`已复制到分组 ${targetAlias}`);
+  await loadData();
+};
+
+const handleGroupDrop = async (group, event) => {
+  const source = draggingConfig.value;
+  dragTargetAlias.value = '';
+  if (!source || !canDropToAlias(group.alias)) return;
+
+  try {
+    if (event.ctrlKey || event.metaKey) {
+      await cloneConfigToAlias(source, group.alias);
+      return;
+    }
+
+    await ElMessageBox.confirm(
+      `将配置 "${source.modelName}" 放入分组 "${group.alias}"。`,
+      '选择拖拽操作',
+      {
+        confirmButtonText: '移动',
+        cancelButtonText: '复制',
+        distinguishCancelAndClose: true,
+        closeOnClickModal: false,
+        closeOnPressEscape: true,
+        type: 'info',
+      }
+    );
+    await moveConfigToAlias(source, group.alias);
+  } catch (error) {
+    if (error === 'cancel') {
+      try {
+        await cloneConfigToAlias(source, group.alias);
+      } catch {
+        ElMessage.error('复制失败');
+      }
+    } else if (error !== 'close') {
+      ElMessage.error('拖拽操作失败');
+    }
+  } finally {
+    handleDragEnd();
+  }
+};
+
 const handleSubmit = async () => {
   try {
     await formRef.value.validate();
     submitting.value = true;
-    const payload = {
-      name: form.value.name,
-      model_name: form.value.modelName,
-      api_base_url: form.value.apiBaseUrl,
-      max_tokens: form.value.maxTokens,
-      priority: form.value.priority,
-      max_concurrency: form.value.maxConcurrency,
-      temperature: form.value.temperature,
-      description: form.value.description,
-      enabled: form.value.enabled,
-    };
+    const payload = buildModelConfigPayload(form.value);
     if (!editingConfig.value || form.value.apiKey) {
       payload.api_key = form.value.apiKey;
     }
@@ -499,6 +618,11 @@ onBeforeUnmount(() => { if (statsTimer) clearInterval(statsTimer); });
 .toolbar { display: flex; justify-content: space-between; align-items: center; }
 .toolbar-left { display: flex; align-items: center; }
 .toolbar-right { display: flex; gap: 12px; }
+.drag-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
 .alias-groups { display: flex; flex-direction: column; gap: 24px; }
 .alias-group {
   display: flex;
@@ -511,6 +635,10 @@ onBeforeUnmount(() => { if (statsTimer) clearInterval(statsTimer); });
     linear-gradient(180deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.9) 100%);
   border: 1px solid rgba(102, 126, 234, 0.2);
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.28);
+}
+.alias-group-drop-target {
+  border-color: rgba(96, 165, 250, 0.85);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.32), 0 18px 40px rgba(15, 23, 42, 0.28);
 }
 .alias-pill {
   display: flex;
@@ -582,6 +710,7 @@ onBeforeUnmount(() => { if (statsTimer) clearInterval(statsTimer); });
 .target-chip-model { font-size: 13px; font-weight: 700; color: #eef4ff; }
 .target-chip-meta { font-size: 11px; color: #9fb0ca; }
 .model-card { width: 420px; border-radius: 8px; transition: all 0.3s ease; }
+.model-card-dragging { opacity: 0.45; transform: scale(0.98); }
 .model-card :deep(.el-card__header) { padding: 8px 12px; }
 .model-card :deep(.el-card__body) { padding: 8px 12px; }
 .model-card :deep(.el-card__footer) { padding: 6px 12px; }

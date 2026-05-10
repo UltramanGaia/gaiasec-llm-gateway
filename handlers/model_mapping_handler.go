@@ -223,6 +223,58 @@ func (h *ModelConfigHandler) CreateModelConfig(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(toModelConfigResponse(config))
 }
 
+func (h *ModelConfigHandler) CloneModelConfig(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		http.Error(w, "model config id is required", http.StatusBadRequest)
+		return
+	}
+
+	var source models.ModelConfig
+	if err := h.DB.First(&source, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "model config not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var input struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	clone := source
+	clone.ID = 0
+	clone.Name = strings.TrimSpace(input.Name)
+	if clone.Name == "" {
+		clone.Name = source.Name
+	}
+	clone.CreatedAt = time.Now()
+	clone.UpdatedAt = clone.CreatedAt
+
+	normalizeModelConfig(&clone)
+	if err := validateModelConfig(&clone); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.DB.Create(&clone).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	InvalidateAllModelConfigCache()
+	getBackendRuntimeManager().updateConfig(clone)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(toModelConfigResponse(clone))
+}
+
 func (h *ModelConfigHandler) GetModelConfigs(w http.ResponseWriter, r *http.Request) {
 	var configs []models.ModelConfig
 	if err := h.DB.Find(&configs).Error; err != nil {

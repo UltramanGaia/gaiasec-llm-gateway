@@ -272,3 +272,55 @@ func TestTestModelConfigCanReportConnectionFailureWithoutRejectingRequest(t *tes
 		t.Fatalf("unexpected test result: %+v", data)
 	}
 }
+
+func TestCloneModelConfigPreservesHiddenAPIKeyAndOverridesAlias(t *testing.T) {
+	db := newModelConfigTestDB(t)
+	source := models.ModelConfig{
+		Name:           "auto",
+		ModelName:      "gpt-test",
+		APIBaseURL:     "https://api.example.test",
+		APIKey:         "secret-key",
+		MaxTokens:      4096,
+		Priority:       2,
+		MaxConcurrency: 5,
+		Temperature:    0.3,
+		Description:    "source",
+		Enabled:        true,
+	}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"name":"mini"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/model-configs/1/clone", bytes.NewReader(body))
+	request.SetPathValue("id", "1")
+	recorder := httptest.NewRecorder()
+
+	NewModelConfigHandler(db).CloneModelConfig(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "secret-key") {
+		t.Fatalf("response leaked api key: %s", recorder.Body.String())
+	}
+
+	var configs []models.ModelConfig
+	if err := db.Order("id asc").Find(&configs).Error; err != nil {
+		t.Fatalf("failed to reload configs: %v", err)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("expected 2 configs, got %d", len(configs))
+	}
+
+	cloned := configs[1]
+	if cloned.Name != "mini" {
+		t.Fatalf("expected cloned alias mini, got %q", cloned.Name)
+	}
+	if cloned.APIKey != "secret-key" {
+		t.Fatalf("expected cloned api key to be preserved, got %q", cloned.APIKey)
+	}
+	if cloned.ModelName != source.ModelName || cloned.APIBaseURL != source.APIBaseURL {
+		t.Fatalf("expected cloned fields to match source, got %+v", cloned)
+	}
+}
