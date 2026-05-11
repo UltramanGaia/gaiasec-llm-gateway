@@ -374,13 +374,15 @@ const normalizeProviderStats = (stats) => Array.isArray(stats)
   ? stats.map(stat => normalizeProviderStat(stat))
   : [];
 
+const providerStatsByConfigId = computed(() => new Map(
+  providerStats.value
+    .filter((stat) => stat.backendConfigId)
+    .map((stat) => [stat.backendConfigId, stat])
+));
+
 const getStat = (config) => {
-  if (!config) return undefined;
-  return providerStats.value.find((stat) => (
-    (config.id && stat.backendConfigId === config.id) ||
-    (stat.modelName && stat.modelName === config.name) ||
-    (stat.backendModelName && stat.backendModelName === config.modelName)
-  ));
+  if (!config?.id) return undefined;
+  return providerStatsByConfigId.value.get(config.id);
 };
 
 const loadData = async () => {
