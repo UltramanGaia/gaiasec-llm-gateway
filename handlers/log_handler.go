@@ -87,10 +87,6 @@ func (h *LogHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		query = query.Where("backend_model_name = ?", backendModel)
 	}
 
-	if userToken := queryValue(r, "user_token"); userToken != "" {
-		query = query.Where("user_token = ?", userToken)
-	}
-
 	// 添加日期范围过滤
 	if startDate := queryValue(r, "start_date"); startDate != "" {
 		if t, err := time.Parse(time.RFC3339, startDate); err == nil {

@@ -131,51 +131,60 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(time.Hour)
 	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
 
-	err = db.AutoMigrate(
-		&models.ModelConfig{},
-		&models.RequestLog{},
-		&models.Session{},
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := removeLegacyModelConfigNameUniqueIndexes(db); err != nil {
+	if err := validateDatabaseSchema(db); err != nil {
 		return nil, err
 	}
 
 	return db, nil
 }
 
-func removeLegacyModelConfigNameUniqueIndexes(db *gorm.DB) error {
-	// Only needed for MySQL deployments that may have an old unique index on name.
-	if db.Dialector.Name() != "mysql" {
-		return nil
-	}
-	type uniqueIndexRow struct {
-		IndexName string `gorm:"column:index_name"`
+type schemaRequirement struct {
+	model   any
+	table   string
+	columns []string
+}
+
+func validateDatabaseSchema(db *gorm.DB) error {
+	requirements := []schemaRequirement{
+		{
+			model: &models.ModelConfig{},
+			table: (&models.ModelConfig{}).TableName(),
+			columns: []string{
+				"id", "name", "model_name", "api_base_url", "api_key",
+				"max_tokens", "priority", "max_concurrency", "temperature",
+				"description", "created_at", "updated_at", "enabled",
+			},
+		},
+		{
+			model: &models.RequestLog{},
+			table: (&models.RequestLog{}).TableName(),
+			columns: []string{
+				"id", "created_at", "updated_at", "model_name", "backend_config_id",
+				"backend_model_name", "backend_api_base_url", "fingerprint",
+				"response_time", "first_token_latency", "avg_token_latency",
+				"active_requests", "request", "response", "stream_response",
+				"request_bytes", "response_bytes", "stream_bytes",
+			},
+		},
+		{
+			model: &models.Session{},
+			table: (&models.Session{}).TableName(),
+			columns: []string{
+				"id", "created_at", "updated_at", "project_id",
+				"agent_id", "engine", "session_id", "events",
+			},
+		},
 	}
 
-	var indexes []uniqueIndexRow
-	if err := db.Raw(`
-		SELECT DISTINCT INDEX_NAME AS index_name
-		FROM information_schema.statistics
-		WHERE table_schema = DATABASE()
-		  AND table_name = ?
-		  AND column_name = ?
-		  AND non_unique = 0
-	`, (&models.ModelConfig{}).TableName(), "name").Scan(&indexes).Error; err != nil {
-		return err
-	}
-
-	for _, index := range indexes {
-		if index.IndexName == "" || index.IndexName == "PRIMARY" {
-			continue
+	for _, requirement := range requirements {
+		if !db.Migrator().HasTable(requirement.model) {
+			return fmt.Errorf("required table %s is missing; apply schema.sql and migrations before starting llm-gateway", requirement.table)
 		}
-		if err := db.Migrator().DropIndex(&models.ModelConfig{}, index.IndexName); err != nil {
-			return err
+		for _, column := range requirement.columns {
+			if !db.Migrator().HasColumn(requirement.model, column) {
+				return fmt.Errorf("required column %s.%s is missing; apply schema.sql and migrations before starting llm-gateway", requirement.table, column)
+			}
 		}
-		log.WithField("index", index.IndexName).Info("Dropped legacy unique index for model config name")
 	}
 
 	return nil
@@ -221,10 +230,11 @@ var port int
 func init() {
 	flag.StringVar(&host, "host", "", "Host to listen on (overrides env variable)")
 	flag.IntVar(&port, "port", 0, "Port to listen on (overrides env variable)")
-	flag.Parse()
 }
 
 func main() {
+	flag.Parse()
+
 	cfg := config.LoadConfig()
 	initLogger(cfg)
 
@@ -409,14 +419,6 @@ func main() {
 			logHandler.GetLogs(w, r)
 		} else if r.Method == "DELETE" {
 			logHandler.ClearLogs(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	mux.HandleFunc("/api/request-logs/inferred-traces", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			logHandler.GetInferredTraces(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
