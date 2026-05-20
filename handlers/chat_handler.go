@@ -442,6 +442,301 @@ func buildAnthropicMessagesURL(apiBaseURL string) string {
 	return providerURL + "messages"
 }
 
+func (h *ChatHandler) Responses(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	log.WithFields(log.Fields{
+		"type":        "request",
+		"endpoint":    "responses",
+		"remote_addr": r.RemoteAddr,
+	}).Debug("Incoming request")
+
+	if h.handleCORS(w, r) {
+		log.Debug("CORS preflight handled")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.WithError(err).Error("Request body read failed")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var requestBody map[string]interface{}
+	if err := json.Unmarshal(body, &requestBody); err != nil {
+		log.WithError(err).Error("Request JSON parse failed")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	modelName, ok := requestBody["model"].(string)
+	if !ok || modelName == "" {
+		log.Error("Responses request missing model")
+		http.Error(w, "Model name is required", http.StatusBadRequest)
+		return
+	}
+
+	isStream := false
+	if streamVal, ok := requestBody["stream"].(bool); ok && streamVal {
+		isStream = true
+	}
+
+	reqLog := models.RequestLog{
+		CreatedAt: time.Now(),
+		ModelName: modelName,
+		Request:   string(body),
+	}
+	shouldLog := false
+	var selectedLease *backendRequestLease
+	requestSucceeded := false
+	defer func() {
+		reqLog.ResponseTime = time.Since(startTime).Milliseconds()
+		if reqLog.FirstTokenLatency == 0 && reqLog.Response != "" {
+			reqLog.FirstTokenLatency = reqLog.ResponseTime
+		}
+		if selectedLease != nil {
+			selectedLease.Finish(backendObservation{
+				Success:           requestSucceeded,
+				ResponseTimeMS:    reqLog.ResponseTime,
+				FirstTokenLatency: reqLog.FirstTokenLatency,
+				AvgTokenLatency:   reqLog.AvgTokenLatency,
+			})
+		}
+		if shouldLog && reqLog.Response != "" {
+			h.asyncLogWriter.Write(&reqLog)
+		}
+	}()
+
+	configs, err := h.getModelConfigs(modelName)
+	if err != nil {
+		log.WithError(err).WithField("model", modelName).Error("Model lookup failed")
+		http.Error(w, "Model not found: "+modelName, http.StatusNotFound)
+		return
+	}
+
+	resp, selectedConfig, lease, attempts, err := h.dispatchResponsesRequest(r.Context(), r.Header, body, modelName, configs, isStream)
+	if err != nil {
+		log.WithError(err).WithFields(log.Fields{
+			"model":    modelName,
+			"attempts": attempts,
+		}).Error("Responses provider dispatch failed")
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	selectedLease = lease
+	reqLog.BackendConfigID = selectedConfig.ID
+	reqLog.BackendModelName = selectedConfig.ModelName
+	reqLog.BackendAPIBaseURL = selectedConfig.APIBaseURL
+	if lease != nil {
+		reqLog.ActiveRequests = lease.ActiveRequestsOnStart()
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.WithFields(log.Fields{
+			"status_code":   resp.StatusCode,
+			"model":         modelName,
+			"backend_model": selectedConfig.ModelName,
+			"attempts":      attempts,
+		}).Warn("Responses provider returned non-2xx, skipping request log")
+		for key, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		w.Write(respBody)
+		return
+	}
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+
+	if isStream {
+		h.handleResponsesStreamResponse(w, resp, &reqLog)
+	} else {
+		if err := h.handleResponsesNonStreamResponse(w, resp, &reqLog); err != nil {
+			log.WithError(err).Error("Responses non-stream response handling failed")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if reqLog.Response != "" {
+		shouldLog = true
+	}
+	requestSucceeded = true
+
+	log.WithFields(log.Fields{
+		"model":         modelName,
+		"backend_model": selectedConfig.ModelName,
+		"backend_id":    selectedConfig.ID,
+		"is_stream":     isStream,
+		"attempts":      attempts,
+		"elapsed_ms":    time.Since(startTime).Milliseconds(),
+	}).Info("Responses request served")
+}
+
+func (h *ChatHandler) dispatchResponsesRequest(ctx context.Context, headers http.Header, body []byte, modelName string, configs []models.ModelConfig, isStream bool) (*http.Response, models.ModelConfig, *backendRequestLease, []providerAttempt, error) {
+	attempts := make([]providerAttempt, 0, len(configs))
+
+	var lastFailure *providerFailureResponse
+	var lastErr error
+
+	for {
+		orderedConfigs := buildAttemptOrder(modelName, configs)
+		if len(orderedConfigs) == 0 {
+			if err := waitForBackendCapacity(ctx, modelName); err != nil {
+				return nil, models.ModelConfig{}, nil, attempts, err
+			}
+			continue
+		}
+
+		for _, config := range orderedConfigs {
+			lease, ok := getBackendRuntimeManager().startRequest(config, modelName)
+			if !ok {
+				attempts = append(attempts, providerAttempt{
+					ConfigID:     config.ID,
+					BackendModel: config.ModelName,
+					APIBaseURL:   config.APIBaseURL,
+					Error:        "max concurrency reached",
+				})
+				continue
+			}
+			attemptStart := time.Now()
+			attempt := providerAttempt{
+				ConfigID:     config.ID,
+				BackendModel: config.ModelName,
+				APIBaseURL:   config.APIBaseURL,
+				ActiveCount:  lease.ActiveRequestsOnStart(),
+			}
+			resp, retries, err := h.sendWithBadGatewayRetry(ctx, attempt, func() (*http.Response, error) {
+				return h.sendResponsesRequest(ctx, headers, body, config, isStream)
+			})
+			attempt.RetryCount = retries
+
+			if err != nil {
+				attempt.Error = err.Error()
+				attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
+				attempts = append(attempts, attempt)
+				lease.Finish(backendObservation{
+					Success:        false,
+					ResponseTimeMS: attempt.ResponseTime,
+				})
+				lastErr = err
+				continue
+			}
+
+			attempt.StatusCode = resp.StatusCode
+			attempt.ResponseTime = time.Since(attemptStart).Milliseconds()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				attempts = append(attempts, attempt)
+				return resp, config, lease, attempts, nil
+			}
+
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				attempt.Error = readErr.Error()
+				attempts = append(attempts, attempt)
+				lease.Finish(backendObservation{
+					Success:        false,
+					ResponseTimeMS: attempt.ResponseTime,
+				})
+				lastErr = readErr
+				continue
+			}
+
+			attempts = append(attempts, attempt)
+			lease.Finish(backendObservation{
+				Success:        false,
+				ResponseTimeMS: attempt.ResponseTime,
+			})
+			lastFailure = &providerFailureResponse{
+				StatusCode: resp.StatusCode,
+				Header:     resp.Header.Clone(),
+				Body:       respBody,
+				Config:     config,
+			}
+		}
+
+		if lastFailure != nil {
+			return cloneFailureResponse(lastFailure), lastFailure.Config, nil, attempts, nil
+		}
+		if lastErr != nil {
+			return nil, models.ModelConfig{}, nil, attempts, lastErr
+		}
+
+		if err := waitForBackendCapacity(ctx, modelName); err != nil {
+			return nil, models.ModelConfig{}, nil, attempts, err
+		}
+	}
+}
+
+func (h *ChatHandler) sendResponsesRequest(ctx context.Context, headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
+	var responsesReq ResponsesRequest
+	if err := json.Unmarshal(body, &responsesReq); err != nil {
+		return nil, err
+	}
+	responsesReq.Model = config.ModelName
+
+	chatReq := convertResponsesToChatRequest(responsesReq)
+	updatedBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, err
+	}
+
+	providerURL := buildProviderChatURL(config.APIBaseURL)
+
+	log.WithFields(log.Fields{
+		"url":         providerURL,
+		"model":       config.ModelName,
+		"is_stream":   isStream,
+		"body_length": len(updatedBody),
+	}).Info("Dispatching Responses→Chat provider request")
+
+	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(updatedBody))
+	if err != nil {
+		log.WithError(err).WithField("url", providerURL).Error("Responses request creation failed")
+		return nil, err
+	}
+
+	if headers != nil {
+		req.Header = headers.Clone()
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+
+	if isStream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
+	var client *http.Client
+	if isStream {
+		client = GetStreamHTTPClient()
+	} else {
+		client = GetHTTPClient()
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.WithError(err).WithField("url", providerURL).Error("Responses request failed")
+		return nil, err
+	}
+
+	log.WithFields(log.Fields{
+		"url":         providerURL,
+		"status_code": resp.StatusCode,
+	}).Info("Responses→Chat response received")
+
+	return resp, nil
+}
+
 func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
 	var contentBuilder strings.Builder
 	chunkCount := 0

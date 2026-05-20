@@ -340,3 +340,314 @@ func lineHasOpenAIStreamToken(line string) bool {
 
 	return streamResponse.Choices[0].Delta.Content != "" || streamResponse.Choices[0].Delta.ReasoningContent != ""
 }
+
+func (h *ChatHandler) handleResponsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Responses provider response read failed")
+		return err
+	}
+
+	if len(respBody) == 0 {
+		log.Warn("Responses non-stream response empty")
+		return nil
+	}
+
+	respBodyDecode, err := gzipDecode(respBody)
+	if err != nil {
+		reqLog.Response = string(respBody)
+	} else {
+		reqLog.Response = string(respBodyDecode)
+	}
+
+	var chatResp map[string]interface{}
+	if err := json.Unmarshal(respBodyDecode, &chatResp); err == nil {
+		responsesResp := convertChatResponseToResponses(chatResp)
+		responsesBody, err := json.Marshal(responsesResp)
+		if err == nil {
+			w.Write(responsesBody)
+			reqLog.Response = string(responsesBody)
+			if reqLog.FirstTokenLatency == 0 {
+				reqLog.FirstTokenLatency = reqLog.ResponseTime
+			}
+			log.WithFields(log.Fields{
+				"response_length": len(responsesBody),
+			}).Info("Responses non-stream response converted")
+			return nil
+		}
+	}
+
+	w.Write(respBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
+	log.WithField("response_length", len(respBody)).Info("Responses non-stream response passthrough")
+	return nil
+}
+
+func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
+	var rawStream bytes.Buffer
+	chunkCount := 0
+	metrics := newStreamMetricsTracker()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		log.Warn("Response writer does not support streaming")
+		h.passthroughStreamResponse(w, resp, reqLog)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	reader := bufio.NewReader(resp.Body)
+	var seqNum int64
+	var responseID string
+	var model string
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				log.WithError(err).Error("Responses stream read failed")
+			}
+			break
+		}
+
+		rawStream.WriteString(line)
+
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") {
+			dataStr := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if dataStr == "" || dataStr == "[DONE]" {
+				if dataStr == "[DONE]" {
+					h.writeResponsesStreamDone(w, responseID, model, seqNum)
+				}
+				continue
+			}
+
+			seqNum++
+			var chatChunk map[string]interface{}
+			if err := json.Unmarshal([]byte(dataStr), &chatChunk); err != nil {
+				w.Write([]byte(line))
+				if flusher != nil {
+					flusher.Flush()
+				}
+				continue
+			}
+
+			if id, ok := chatChunk["id"].(string); ok && id != "" {
+				responseID = id
+			}
+			if m, ok := chatChunk["model"].(string); ok && m != "" {
+				model = m
+			}
+
+			if choices, ok := chatChunk["choices"].([]interface{}); ok && len(choices) > 0 {
+				chunkCount++
+				metrics.Record(time.Now())
+				responsesEvents := convertChatStreamChunkToResponsesEvents(chatChunk, seqNum)
+				for _, event := range responsesEvents {
+					eventLine := formatResponsesStreamEvent(event)
+					w.Write([]byte(eventLine))
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+			} else if usage, ok := chatChunk["usage"].(map[string]interface{}); ok && usage != nil {
+				h.writeResponsesStreamCompleted(w, responseID, model, usage, seqNum)
+			}
+		} else if trimmed != "" {
+			w.Write([]byte(line))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
+
+	reqLog.StreamResponse = rawStream.Bytes()
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+
+	log.WithField("chunks", chunkCount).Info("Responses stream response completed")
+}
+
+func convertChatStreamChunkToResponsesEvents(chatChunk map[string]interface{}, seqNum int64) []ResponsesStreamEvent {
+	events := make([]ResponsesStreamEvent, 0)
+
+	if choices, ok := chatChunk["choices"].([]interface{}); ok {
+		for _, ch := range choices {
+			choice, ok := ch.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			idx := 0
+			if i, ok := choice["index"].(float64); ok {
+				idx = int(i)
+			}
+
+			delta, ok := choice["delta"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			if role, ok := delta["role"].(string); ok && role == "assistant" {
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.output_item.added",
+					Data: map[string]interface{}{
+						"type":            "response.output_item.added",
+						"sequence_number": seqNum,
+						"output_index":    idx,
+						"item": map[string]interface{}{
+							"type":   "message",
+							"status": "in_progress",
+							"role":   "assistant",
+						},
+					},
+				})
+			}
+
+			if content, ok := delta["content"].(string); ok && content != "" {
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.output_text.delta",
+					Data: map[string]interface{}{
+						"type":            "response.output_text.delta",
+						"sequence_number": seqNum,
+						"output_index":    idx,
+						"content_index":   0,
+						"delta":           content,
+					},
+				})
+			}
+
+			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok {
+				for _, tc := range toolCalls {
+					toolCall, ok := tc.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					tcID, _ := toolCall["id"].(string)
+					fn, _ := toolCall["function"].(map[string]interface{})
+					name, _ := fn["name"].(string)
+					args, _ := fn["arguments"].(string)
+
+					if tcID != "" && name != "" {
+						events = append(events, ResponsesStreamEvent{
+							Event: "response.output_item.added",
+							Data: map[string]interface{}{
+								"type":            "response.output_item.added",
+								"sequence_number": seqNum,
+								"output_index":    idx + 100,
+								"item": map[string]interface{}{
+									"type":    "function_call",
+									"id":      tcID,
+									"call_id": tcID,
+									"name":    name,
+									"status":  "in_progress",
+								},
+							},
+						})
+					}
+
+					if args != "" {
+						events = append(events, ResponsesStreamEvent{
+							Event: "response.function_call_arguments.delta",
+							Data: map[string]interface{}{
+								"type":            "response.function_call_arguments.delta",
+								"sequence_number": seqNum,
+								"output_index":    idx + 100,
+								"delta":           args,
+							},
+						})
+					}
+				}
+			}
+
+			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.output_item.done",
+					Data: map[string]interface{}{
+						"type":            "response.output_item.done",
+						"sequence_number": seqNum,
+						"output_index":    idx,
+						"item": map[string]interface{}{
+							"type":   "message",
+							"status": "completed",
+							"role":   "assistant",
+						},
+					},
+				})
+			}
+		}
+	}
+
+	return events
+}
+
+func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, model string, usage map[string]interface{}, seqNum int64) {
+	seqNum++
+	inputTokens := 0
+	outputTokens := 0
+	if pt, ok := usage["prompt_tokens"].(float64); ok {
+		inputTokens = int(pt)
+	}
+	if ct, ok := usage["completion_tokens"].(float64); ok {
+		outputTokens = int(ct)
+	}
+
+	event := ResponsesStreamEvent{
+		Event: "response.completed",
+		Data: map[string]interface{}{
+			"type":            "response.completed",
+			"sequence_number": seqNum,
+			"response": map[string]interface{}{
+				"id":     id,
+				"object": "response",
+				"status": "completed",
+				"model":  model,
+				"usage": map[string]interface{}{
+					"input_tokens":  inputTokens,
+					"output_tokens": outputTokens,
+					"total_tokens":  inputTokens + outputTokens,
+				},
+			},
+		},
+	}
+	w.Write([]byte(formatResponsesStreamEvent(event)))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (h *ChatHandler) writeResponsesStreamDone(w http.ResponseWriter, id, model string, seqNum int64) {
+	seqNum++
+	event := ResponsesStreamEvent{
+		Event: "response.completed",
+		Data: map[string]interface{}{
+			"type":            "response.completed",
+			"sequence_number": seqNum,
+			"response": map[string]interface{}{
+				"id":     id,
+				"object": "response",
+				"status": "completed",
+				"model":  model,
+			},
+		},
+	}
+	w.Write([]byte(formatResponsesStreamEvent(event)))
+	w.Write([]byte("data: [DONE]\n\n"))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func formatResponsesStreamEvent(event ResponsesStreamEvent) string {
+	data, _ := json.Marshal(event.Data)
+	return "event: " + event.Event + "\ndata: " + string(data) + "\n\n"
+}
+
+type ResponsesStreamEvent struct {
+	Event string
+	Data  interface{}
+}

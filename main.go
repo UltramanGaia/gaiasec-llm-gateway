@@ -302,6 +302,8 @@ func main() {
 	mux.HandleFunc("/chat/completions", chatHandler.ChatCompletion)
 	mux.HandleFunc("/v1/chat/completions", chatHandler.ChatCompletion)
 	mux.HandleFunc("/v1/messages", chatHandler.AnthropicMessages)
+	mux.HandleFunc("/v1/responses", chatHandler.Responses)
+	mux.HandleFunc("/responses", chatHandler.Responses)
 	mux.HandleFunc("/v1/models", chatHandler.ListModels)
 
 	mux.HandleFunc("/api/model-mappings/{id}", func(w http.ResponseWriter, r *http.Request) {
