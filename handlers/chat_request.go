@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"llm-gateway/models"
@@ -79,6 +80,11 @@ func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Head
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	if headers != nil {
+		if userAgent := strings.TrimSpace(headers.Get("User-Agent")); userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
+	}
 
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")

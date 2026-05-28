@@ -409,6 +409,11 @@ func (h *ChatHandler) sendAnthropicRequest(ctx context.Context, headers http.Hea
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", config.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	if headers != nil {
+		if userAgent := strings.TrimSpace(headers.Get("User-Agent")); userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
+	}
 
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")
@@ -712,6 +717,11 @@ func (h *ChatHandler) sendResponsesRequest(ctx context.Context, headers http.Hea
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	if headers != nil {
+		if userAgent := strings.TrimSpace(headers.Get("User-Agent")); userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
+	}
 
 	if isStream {
 		req.Header.Set("Accept", "text/event-stream")
