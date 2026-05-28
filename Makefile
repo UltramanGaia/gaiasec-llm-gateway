@@ -15,7 +15,7 @@ commit:
 build:
 	cd frontend && npm run build
 	CGO_ENABLED=0 GOOS=linux go build -o llm-gateway .
-	docker build -t $(LOCAL_IMAGE) . -f Dockerfile_local
+	docker build -t $(LOCAL_IMAGE) . -f Dockerfile
 	docker tag $(LOCAL_IMAGE) $(REMOTE_IMAGE)
 push:
 	test -z "$$(git cherry -v)" || opencode run 'git push it'
