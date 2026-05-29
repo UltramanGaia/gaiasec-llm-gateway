@@ -389,15 +389,20 @@ func (h *ChatHandler) dispatchAnthropicRequest(ctx context.Context, headers http
 
 func (h *ChatHandler) sendAnthropicRequest(ctx context.Context, headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	providerURL := buildAnthropicMessagesURL(config.APIBaseURL)
+	requestBody, err := buildAnthropicProviderRequestBody(body, config)
+	if err != nil {
+		log.WithError(err).WithField("model", config.ModelName).Error("Anthropic request body rewrite failed")
+		return nil, err
+	}
 
 	log.WithFields(log.Fields{
 		"url":         providerURL,
 		"model":       config.ModelName,
 		"is_stream":   isStream,
-		"body_length": len(body),
+		"body_length": len(requestBody),
 	}).Info("Dispatching Anthropic provider request")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(requestBody))
 	if err != nil {
 		log.WithError(err).WithField("url", providerURL).Error("Anthropic request creation failed")
 		return nil, err
@@ -437,6 +442,21 @@ func (h *ChatHandler) sendAnthropicRequest(ctx context.Context, headers http.Hea
 	}).Info("Anthropic response received")
 
 	return resp, nil
+}
+
+func buildAnthropicProviderRequestBody(body []byte, config models.ModelConfig) ([]byte, error) {
+	var bodyCopy map[string]json.RawMessage
+	if err := json.Unmarshal(body, &bodyCopy); err != nil {
+		return nil, err
+	}
+
+	modelJSON, err := json.Marshal(config.ModelName)
+	if err != nil {
+		return nil, err
+	}
+	bodyCopy["model"] = modelJSON
+
+	return json.Marshal(bodyCopy)
 }
 
 func buildAnthropicMessagesURL(apiBaseURL string) string {

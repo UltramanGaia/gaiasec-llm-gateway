@@ -28,6 +28,10 @@ type Config struct {
 	DBDriver         string
 	DBPath           string
 	SessionServerKey string
+
+	UpstreamMaxIdleConns        int
+	UpstreamMaxIdleConnsPerHost int
+	UpstreamMaxConnsPerHost     int
 }
 
 var AppConfig *Config
@@ -53,6 +57,9 @@ func LoadConfig() *Config {
 		DBDriver:          getEnv("DB_DRIVER", "sqlite"),
 		DBPath:            getEnv("DB_PATH", "./llm-gateway.db"),
 		SessionServerKey:  getEnv("SESSION_SERVER_KEY", ""),
+		UpstreamMaxIdleConns:        getEnvAsInt("UPSTREAM_MAX_IDLE_CONNS", 8000),
+		UpstreamMaxIdleConnsPerHost: getEnvAsInt("UPSTREAM_MAX_IDLE_CONNS_PER_HOST", 5000),
+		UpstreamMaxConnsPerHost:     getEnvAsInt("UPSTREAM_MAX_CONNS_PER_HOST", 5000),
 	}
 
 	AppConfig = cfg

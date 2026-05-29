@@ -311,6 +311,55 @@ func TestDispatchAnthropicRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
 	}
 }
 
+func TestDispatchAnthropicRequestRewritesModelToBackendModel(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/messages" {
+			t.Fatalf("expected /messages path, got %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("unmarshal body: %v", err)
+		}
+		if payload["model"] != "backend-claude" {
+			t.Fatalf("expected backend model to be forwarded, got %#v", payload["model"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message"}`))
+	}))
+	defer provider.Close()
+
+	handler := &ChatHandler{}
+	config := models.ModelConfig{
+		ID:         1,
+		Name:       "max",
+		ModelName:  "backend-claude",
+		APIBaseURL: provider.URL,
+		APIKey:     "key-a",
+	}
+	body := []byte(`{"model":"max","messages":[{"role":"user","content":"hello"}]}`)
+
+	resp, _, lease, _, err := handler.dispatchAnthropicRequest(context.Background(), http.Header{}, body, "max", []models.ModelConfig{config}, false)
+	if err != nil {
+		t.Fatalf("dispatchAnthropicRequest returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
 func TestBuildAttemptOrderPrefersLowerAdaptiveScore(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 
