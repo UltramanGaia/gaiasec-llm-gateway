@@ -60,6 +60,24 @@ func TestAnthropicEventsFromResponsesFrame(t *testing.T) {
 	}
 }
 
+func TestAnthropicEventsFromResponsesFramePreserveImagePart(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	events := AnthropicEventsFromResponsesFrame(SSEFrame{
+		Event: "response.output_item.added",
+		Data:  `{"type":"response.output_item.added","output_index":0,"item":{"type":"message","status":"in_progress","role":"assistant","content":[{"type":"output_image","source":{"type":"url","url":"https://example.com/a.png"}}]}}`,
+	}, state)
+
+	var sawImage bool
+	for _, event := range events {
+		if event.Event == "content_block_start" && strings.Contains(event.Data, `"type":"image"`) {
+			sawImage = true
+		}
+	}
+	if !sawImage {
+		t.Fatalf("expected anthropic content_block_start with image, got %+v", events)
+	}
+}
+
 func TestAnthropicFramesFromChatChunk(t *testing.T) {
 	state := NewAnthropicOutboundState()
 	chunk := map[string]interface{}{

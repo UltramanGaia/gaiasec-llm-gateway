@@ -118,6 +118,57 @@ func TestResponsesHandlerTransformsToChatForChatUpstream(t *testing.T) {
 	}
 }
 
+func TestResponsesHandlerPreservesJSONSchemaWhenTransformingToChatUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	var gotResponseFormat map[string]any
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		gotResponseFormat, _ = payload["response_format"].(map[string]any)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","model":"backend-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:               "responses-jsonschema-to-chat",
+		ModelName:          "backend-chat",
+		APIBaseURL:         provider.URL,
+		APIKey:             "key",
+		UpstreamType:       models.UpstreamTypeOpenAIChat,
+		SupportsJSONSchema: true,
+		Enabled:            true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-jsonschema-to-chat","input":"hello","text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}}}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if gotResponseFormat == nil {
+		t.Fatalf("expected response_format payload")
+	}
+	if gotResponseFormat["type"] == "json_schema" {
+		return
+	}
+	format, _ := gotResponseFormat["format"].(map[string]any)
+	if format["type"] != "json_schema" {
+		t.Fatalf("expected json_schema to be preserved into chat response_format, got %+v", gotResponseFormat)
+	}
+}
+
 func TestChatHandlerTransformsToResponsesUpstream(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -190,6 +241,107 @@ func TestChatHandlerTransformsToResponsesUpstream(t *testing.T) {
 	message := choice["message"].(map[string]any)
 	if message["content"] != "hello back" {
 		t.Fatalf("expected converted chat content, got %+v", message)
+	}
+}
+
+func TestChatHandlerPreservesJSONSchemaWhenTransformingToResponsesUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	var gotText map[string]any
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		gotText, _ = payload["text"].(map[string]any)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","model":"backend-responses","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:               "chat-jsonschema-to-responses",
+		ModelName:          "backend-responses",
+		APIBaseURL:         provider.URL,
+		APIKey:             "key",
+		UpstreamType:       models.UpstreamTypeOpenAIResponses,
+		SupportsJSONSchema: true,
+		Enabled:            true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-jsonschema-to-responses","messages":[{"role":"user","content":"hello"}],"response_format":{"type":"json_schema","json_schema":{"name":"result","schema":{"type":"object"}}}}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if gotText == nil {
+		t.Fatalf("expected responses text payload")
+	}
+	if gotText["type"] == "json_schema" {
+		return
+	}
+	format, _ := gotText["format"].(map[string]any)
+	if format["type"] != "json_schema" {
+		t.Fatalf("expected json_schema to be preserved into responses text.format, got %+v", gotText)
+	}
+}
+
+func TestProtocolRequestWritesRequestLogForTransformPath(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	resetAsyncLogWriterForTests()
+	defer resetAsyncLogWriterForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+	if err := db.AutoMigrate(&models.RequestLog{}); err != nil {
+		t.Fatalf("migrate request logs: %v", err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_123","object":"response","status":"completed","model":"backend-responses","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "log-transform",
+		ModelName:    "backend-responses",
+		APIBaseURL:   provider.URL,
+		APIKey:       "key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"log-transform","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Flush async logs for deterministic verification.
+	GetAsyncLogWriter(db).Stop()
+
+	var count int64
+	if err := db.Model(&models.RequestLog{}).Where("model_name = ?", "log-transform").Count(&count).Error; err != nil {
+		t.Fatalf("count request logs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 request log entry, got %d", count)
 	}
 }
 

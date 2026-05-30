@@ -53,3 +53,21 @@ func TestResponsesEventsFromAnthropicFrame(t *testing.T) {
 		t.Fatalf("expected added/delta/completed events, got added=%v delta=%v completed=%v", sawAdded, sawDelta, sawCompleted)
 	}
 }
+
+func TestResponsesEventsFromAnthropicFramePreserveImageBlock(t *testing.T) {
+	state := NewAnthropicInboundState()
+	var seq int64
+	events, _, _, _ := ResponsesEventsFromAnthropicFrame(SSEFrame{
+		Event: "content_block_start",
+		Data:  `{"type":"content_block_start","index":1,"content_block":{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}}`,
+	}, state, &seq)
+
+	if len(events) != 1 || events[0].Event != "response.content_part.added" {
+		t.Fatalf("expected response.content_part.added event, got %+v", events)
+	}
+	data := events[0].Data.(map[string]interface{})
+	part := data["part"].(map[string]interface{})
+	if part["type"] != "output_image" {
+		t.Fatalf("expected output_image part, got %+v", part)
+	}
+}

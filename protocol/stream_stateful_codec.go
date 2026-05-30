@@ -259,6 +259,34 @@ func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundS
 				}))
 				state.TextStarted = true
 			}
+			if content, ok := item["content"].([]interface{}); ok {
+				for idx, rawPart := range content {
+					part, ok := rawPart.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					switch stringValue(part["type"]) {
+					case "output_image":
+						frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+							"type":  "content_block_start",
+							"index": idx + 10,
+							"content_block": map[string]interface{}{
+								"type":   "image",
+								"source": part["source"],
+							},
+						}))
+					case "output_file", "file":
+						frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+							"type":  "content_block_start",
+							"index": idx + 10,
+							"content_block": map[string]interface{}{
+								"type":   "document",
+								"source": part["source"],
+							},
+						}))
+					}
+				}
+			}
 		case "function_call":
 			toolID := firstNonEmpty(stringValue(item["call_id"]), stringValue(item["id"]))
 			toolName := stringValue(item["name"])

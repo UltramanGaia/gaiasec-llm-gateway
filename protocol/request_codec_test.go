@@ -60,6 +60,32 @@ func TestChatRequestIRRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChatRequestToolChoiceRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-tools",
+		"messages":[{"role":"user","content":"hello"}],
+		"tool_choice":{"type":"function","function":{"name":"lookup"}}
+	}`)
+
+	ir, err := DecodeOpenAIChatRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
+	}
+	encoded, err := EncodeOpenAIChatRequest(ir, "backend-tools")
+	if err != nil {
+		t.Fatalf("EncodeOpenAIChatRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	toolChoice := payload["tool_choice"].(map[string]interface{})
+	function := toolChoice["function"].(map[string]interface{})
+	if function["name"] != "lookup" {
+		t.Fatalf("expected tool_choice function lookup, got %+v", toolChoice)
+	}
+}
+
 func TestChatRequestVisionRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-vision",
@@ -90,6 +116,39 @@ func TestChatRequestVisionRoundTrip(t *testing.T) {
 	content := payload["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
 	if content[1].(map[string]interface{})["type"] != "image_url" {
 		t.Fatalf("expected image_url part to round-trip, got %+v", content[1])
+	}
+}
+
+func TestChatRequestFileRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-file",
+		"messages":[
+			{"role":"user","content":[
+				{"type":"text","text":"read"},
+				{"type":"input_file","file_id":"file_123"}
+			]}
+		]
+	}`)
+
+	ir, err := DecodeOpenAIChatRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
+	}
+	if len(ir.Messages) != 1 || len(ir.Messages[0].Content) != 2 || ir.Messages[0].Content[1].Type != "file" {
+		t.Fatalf("expected file content in IR, got %+v", ir.Messages)
+	}
+
+	encoded, err := EncodeOpenAIChatRequest(ir, "backend-file")
+	if err != nil {
+		t.Fatalf("EncodeOpenAIChatRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	content := payload["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if content[1].(map[string]interface{})["type"] != "input_file" {
+		t.Fatalf("expected input_file part to round-trip, got %+v", content[1])
 	}
 }
 
@@ -138,6 +197,31 @@ func TestResponsesRequestIRRoundTrip(t *testing.T) {
 	}
 }
 
+func TestResponsesRequestToolChoiceRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model":"resp-tools",
+		"input":"hello",
+		"tool_choice":{"type":"function","name":"lookup"}
+	}`)
+
+	ir, err := DecodeResponsesRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeResponsesRequest error: %v", err)
+	}
+	encoded, err := EncodeResponsesRequest(ir, "backend-resp-tools")
+	if err != nil {
+		t.Fatalf("EncodeResponsesRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	toolChoice := payload["tool_choice"].(map[string]interface{})
+	if toolChoice["name"] != "lookup" {
+		t.Fatalf("expected responses tool_choice lookup, got %+v", toolChoice)
+	}
+}
+
 func TestResponsesRequestVisionRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"model":"resp-vision",
@@ -168,6 +252,39 @@ func TestResponsesRequestVisionRoundTrip(t *testing.T) {
 	content := payload["input"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
 	if content[1].(map[string]interface{})["type"] != "input_image" {
 		t.Fatalf("expected input_image part to round-trip, got %+v", content[1])
+	}
+}
+
+func TestResponsesRequestFileRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model":"resp-file",
+		"input":[
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"read"},
+				{"type":"input_file","file_id":"file_123"}
+			]}
+		]
+	}`)
+
+	ir, err := DecodeResponsesRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeResponsesRequest error: %v", err)
+	}
+	if len(ir.Messages) != 1 || len(ir.Messages[0].Content) != 2 || ir.Messages[0].Content[1].Type != "file" {
+		t.Fatalf("expected file content in responses IR, got %+v", ir.Messages)
+	}
+
+	encoded, err := EncodeResponsesRequest(ir, "backend-resp-file")
+	if err != nil {
+		t.Fatalf("EncodeResponsesRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	content := payload["input"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if content[1].(map[string]interface{})["type"] != "input_file" {
+		t.Fatalf("expected input_file part to round-trip, got %+v", content[1])
 	}
 }
 
@@ -214,6 +331,31 @@ func TestAnthropicRequestIRRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAnthropicRequestToolChoiceRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-tools",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],
+		"tool_choice":{"type":"tool","name":"lookup"}
+	}`)
+
+	ir, err := DecodeAnthropicRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeAnthropicRequest error: %v", err)
+	}
+	encoded, err := EncodeAnthropicRequest(ir, "backend-claude-tools")
+	if err != nil {
+		t.Fatalf("EncodeAnthropicRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	toolChoice := payload["tool_choice"].(map[string]interface{})
+	if toolChoice["name"] != "lookup" {
+		t.Fatalf("expected anthropic tool_choice lookup, got %+v", toolChoice)
+	}
+}
+
 func TestAnthropicRequestVisionRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"model":"claude-vision",
@@ -244,5 +386,38 @@ func TestAnthropicRequestVisionRoundTrip(t *testing.T) {
 	content := payload["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
 	if content[1].(map[string]interface{})["type"] != "image" {
 		t.Fatalf("expected anthropic image part to round-trip, got %+v", content[1])
+	}
+}
+
+func TestAnthropicRequestFileRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-file",
+		"messages":[
+			{"role":"user","content":[
+				{"type":"text","text":"read"},
+				{"type":"document","source":{"type":"url","url":"https://example.com/a.pdf"}}
+			]}
+		]
+	}`)
+
+	ir, err := DecodeAnthropicRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeAnthropicRequest error: %v", err)
+	}
+	if len(ir.Messages) != 1 || len(ir.Messages[0].Content) != 2 || ir.Messages[0].Content[1].Type != "file" {
+		t.Fatalf("expected anthropic file content in IR, got %+v", ir.Messages)
+	}
+
+	encoded, err := EncodeAnthropicRequest(ir, "backend-claude-file")
+	if err != nil {
+		t.Fatalf("EncodeAnthropicRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	content := payload["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if content[1].(map[string]interface{})["type"] != "document" {
+		t.Fatalf("expected document part to round-trip, got %+v", content[1])
 	}
 }

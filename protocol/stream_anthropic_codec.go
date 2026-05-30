@@ -223,25 +223,39 @@ func ResponsesEventsFromAnthropicFrame(frame SSEFrame, state *AnthropicInboundSt
 		})
 	case "content_block_start":
 		index := numberToIntDefault(payload["index"])
-		if block, ok := payload["content_block"].(map[string]interface{}); ok && stringValue(block["type"]) == "tool_use" {
-			toolID := stringValue(block["id"])
-			toolName := stringValue(block["name"])
-			state.ToolIndexes[index] = anthropicInboundToolState{ID: toolID, Name: toolName}
-			events = append(events, ResponsesStreamEvent{
-				Event: "response.output_item.added",
-				Data: map[string]interface{}{
-					"type":            "response.output_item.added",
-					"sequence_number": nextSeq(),
-					"output_index":    index + 100,
-					"item": map[string]interface{}{
-						"type":    "function_call",
-						"id":      toolID,
-						"call_id": toolID,
-						"name":    toolName,
-						"status":  "in_progress",
+		if block, ok := payload["content_block"].(map[string]interface{}); ok {
+			switch stringValue(block["type"]) {
+			case "tool_use":
+				toolID := stringValue(block["id"])
+				toolName := stringValue(block["name"])
+				state.ToolIndexes[index] = anthropicInboundToolState{ID: toolID, Name: toolName}
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.output_item.added",
+					Data: map[string]interface{}{
+						"type":            "response.output_item.added",
+						"sequence_number": nextSeq(),
+						"output_index":    index + 100,
+						"item": map[string]interface{}{
+							"type":    "function_call",
+							"id":      toolID,
+							"call_id": toolID,
+							"name":    toolName,
+							"status":  "in_progress",
+						},
 					},
-				},
-			})
+				})
+			case "image", "document":
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.content_part.added",
+					Data: map[string]interface{}{
+						"type":            "response.content_part.added",
+						"sequence_number": nextSeq(),
+						"output_index":    0,
+						"content_index":   index,
+						"part":            anthropicContentBlockToResponsesPart(block),
+					},
+				})
+			}
 		}
 	case "content_block_delta":
 		index := numberToIntDefault(payload["index"])
@@ -321,5 +335,22 @@ func anthropicUsageToChatUsage(usage map[string]interface{}) map[string]interfac
 		"prompt_tokens":     prompt,
 		"completion_tokens": completion,
 		"total_tokens":      prompt + completion,
+	}
+}
+
+func anthropicContentBlockToResponsesPart(block map[string]interface{}) map[string]interface{} {
+	switch stringValue(block["type"]) {
+	case "image":
+		return map[string]interface{}{
+			"type":   "output_image",
+			"source": block["source"],
+		}
+	case "document":
+		return map[string]interface{}{
+			"type":   "output_file",
+			"source": block["source"],
+		}
+	default:
+		return block
 	}
 }

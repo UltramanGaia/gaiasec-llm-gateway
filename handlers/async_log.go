@@ -148,6 +148,20 @@ func (w *AsyncLogWriter) Write(reqLog *models.RequestLog) {
 }
 
 func (w *AsyncLogWriter) Stop() {
+	if w == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
 	close(w.stopChan)
 	w.wg.Wait()
+}
+
+func resetAsyncLogWriterForTests() {
+	if asyncLogWriter != nil {
+		asyncLogWriter.Stop()
+	}
+	asyncLogWriter = nil
+	asyncLogWriterOnce = sync.Once{}
 }

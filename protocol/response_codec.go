@@ -177,7 +177,7 @@ func encodeOpenAIChatChoices(ir IRResponse) []map[string]interface{} {
 	if len(ir.OutputItems) > 0 {
 		first := ir.OutputItems[0]
 		message["role"] = firstNonEmpty(first.Role, "assistant")
-		message["content"] = encodeTextContent(first.Content)
+		message["content"] = encodeOpenAIContent(first.Content)
 		if reasoning := encodeReasoningContent(first.Content); reasoning != "" {
 			message["reasoning_content"] = reasoning
 		}
@@ -209,8 +209,11 @@ func decodeResponsesOutput(raw json.RawMessage) []IRMessage {
 						continue
 					}
 					msg.Content = append(msg.Content, IRPart{
-						Type: firstNonEmpty(stringValue(part["type"]), "output_text"),
+						Type: normalizeIRPartType(firstNonEmpty(stringValue(part["type"]), "output_text")),
 						Text: stringValue(part["text"]),
+						ProviderExtensions: map[string]interface{}{
+							"raw": part,
+						},
 					})
 				}
 			}
@@ -249,16 +252,13 @@ func encodeResponsesOutput(messages []IRMessage) (json.RawMessage, string, error
 			continue
 		}
 		text := encodeTextContent(msg.Content)
-		if text != "" {
+		if text != "" || hasNonTextParts(msg.Content) {
 			outputText += text
 			output = append(output, map[string]interface{}{
-				"type":   "message",
-				"status": "completed",
-				"role":   firstNonEmpty(msg.Role, "assistant"),
-				"content": []map[string]interface{}{{
-					"type": "output_text",
-					"text": text,
-				}},
+				"type":    "message",
+				"status":  "completed",
+				"role":    firstNonEmpty(msg.Role, "assistant"),
+				"content": encodeResponsesOutputContent(msg.Content),
 			})
 		}
 		for _, part := range msg.Content {
@@ -298,7 +298,7 @@ func decodeAnthropicContent(raw json.RawMessage) []IRMessage {
 	for _, item := range content {
 		switch stringValue(item["type"]) {
 		case "text":
-			msg.Content = append(msg.Content, IRPart{Type: "text", Text: stringValue(item["text"])})
+			msg.Content = append(msg.Content, IRPart{Type: "text", Text: stringValue(item["text"]), ProviderExtensions: map[string]interface{}{"raw": item}})
 		case "thinking":
 			msg.Content = append(msg.Content, IRPart{
 				Type: "reasoning",
@@ -307,6 +307,12 @@ func decodeAnthropicContent(raw json.RawMessage) []IRMessage {
 					"signature": stringValue(item["signature"]),
 				},
 			})
+		case "image", "document":
+			partType := "image"
+			if stringValue(item["type"]) == "document" {
+				partType = "file"
+			}
+			msg.Content = append(msg.Content, IRPart{Type: partType, ProviderExtensions: map[string]interface{}{"raw": item}})
 		case "tool_use":
 			msg.Content = append(msg.Content, IRPart{
 				Type:      "tool_call",
@@ -327,11 +333,14 @@ func decodeAnthropicContent(raw json.RawMessage) []IRMessage {
 func encodeAnthropicContent(messages []IRMessage) (json.RawMessage, error) {
 	content := make([]map[string]interface{}, 0)
 	for _, msg := range messages {
-		if text := encodeTextContent(msg.Content); text != "" {
-			content = append(content, map[string]interface{}{"type": "text", "text": text})
-		}
 		for _, part := range msg.Content {
 			switch part.Type {
+			case "text", "output_text", "":
+				if part.Text != "" {
+					content = append(content, map[string]interface{}{"type": "text", "text": part.Text})
+				}
+			case "image", "file":
+				content = append(content, encodeRawOrFallbackPart(part, map[string]interface{}{"type": map[string]string{"image": "image", "file": "document"}[part.Type]}))
 			case "tool_call":
 				content = append(content, map[string]interface{}{
 					"type":  "tool_use",
@@ -384,6 +393,30 @@ func extractResponsesReasoning(item map[string]interface{}) string {
 		}
 	}
 	return ""
+}
+
+func encodeResponsesOutputContent(parts []IRPart) []map[string]interface{} {
+	content := make([]map[string]interface{}, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "text", "output_text", "":
+			if part.Text != "" {
+				content = append(content, map[string]interface{}{"type": "output_text", "text": part.Text})
+			}
+		case "image", "file":
+			content = append(content, encodeRawOrFallbackPart(part, map[string]interface{}{"type": part.Type}))
+		}
+	}
+	return content
+}
+
+func hasNonTextParts(parts []IRPart) bool {
+	for _, part := range parts {
+		if part.Type == "image" || part.Type == "file" {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeAnthropicUsage(raw json.RawMessage) json.RawMessage {
