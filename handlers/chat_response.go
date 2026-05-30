@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -22,12 +23,29 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 	var rawStream bytes.Buffer
 	chunkCount := 0
 	metrics := newStreamMetricsTracker()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.WithError(err).Error("Stream read failed")
+				entry := loggerWithTrace(ctx).WithError(err).WithFields(log.Fields{
+					"backend_model":       config.ModelName,
+					"backend_config_id":   reqLog.BackendConfigID,
+					"stream_chunks":       chunkCount,
+					"first_token_latency": metrics.FirstTokenLatency(),
+					"avg_token_latency":   metrics.AvgTokenLatency(),
+					"termination_reason":  streamTerminationReason(err),
+				})
+				switch {
+				case isExpectedStreamTermination(err):
+					entry.Warn("OpenAI stream terminated before EOF")
+				default:
+					entry.Error("Stream read failed")
+				}
 			}
 			break
 		}
@@ -57,7 +75,7 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 	}
 
 	reqLog.Response = responseJSON
-	log.WithFields(log.Fields{
+	loggerWithTrace(ctx).WithFields(log.Fields{
 		"chunks":           chunkCount,
 		"content_length":   contentLength,
 		"reasoning_length": reasoningLength,
@@ -389,10 +407,14 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 	var rawStream bytes.Buffer
 	chunkCount := 0
 	metrics := newStreamMetricsTracker()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		log.Warn("Response writer does not support streaming")
+		loggerWithTrace(ctx).Warn("Response writer does not support streaming")
 		h.passthroughStreamResponse(w, resp, reqLog)
 		return
 	}
@@ -410,7 +432,20 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.WithError(err).Error("Responses stream read failed")
+				entry := loggerWithTrace(ctx).WithError(err).WithFields(log.Fields{
+					"backend_model":       reqLog.BackendModelName,
+					"backend_config_id":   reqLog.BackendConfigID,
+					"stream_chunks":       chunkCount,
+					"first_token_latency": metrics.FirstTokenLatency(),
+					"avg_token_latency":   metrics.AvgTokenLatency(),
+					"termination_reason":  streamTerminationReason(err),
+				})
+				switch {
+				case isExpectedStreamTermination(err):
+					entry.Warn("Responses stream terminated before EOF")
+				default:
+					entry.Error("Responses stream read failed")
+				}
 			}
 			break
 		}
@@ -470,7 +505,13 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
 	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
 
-	log.WithField("chunks", chunkCount).Info("Responses stream response completed")
+	loggerWithTrace(ctx).WithFields(log.Fields{
+		"backend_model":       reqLog.BackendModelName,
+		"backend_config_id":   reqLog.BackendConfigID,
+		"stream_chunks":       chunkCount,
+		"first_token_latency": metrics.FirstTokenLatency(),
+		"avg_token_latency":   metrics.AvgTokenLatency(),
+	}).Info("Responses stream response completed")
 }
 
 func convertChatStreamChunkToResponsesEvents(chatChunk map[string]interface{}, seqNum int64) []ResponsesStreamEvent {

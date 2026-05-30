@@ -482,7 +482,13 @@ func (h *LogHandler) processStreamResponse(resp *http.Response) string {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				log.WithError(err).Error("Replay stream read failed")
+				entry := log.WithError(err)
+				switch {
+				case isExpectedStreamTermination(err):
+					entry.Debug("Replay stream ended after context cancellation or client disconnect")
+				default:
+					entry.Error("Replay stream read failed")
+				}
 			}
 			break
 		}

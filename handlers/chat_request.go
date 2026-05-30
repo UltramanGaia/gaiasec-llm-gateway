@@ -18,20 +18,20 @@ import (
 func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.RawMessage, string, string, bool, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.WithError(err).Error("Request body read failed")
+		logRequestReadFailure(r.Context(), r, "chat.completions", err)
 		return nil, nil, "", "", false, err
 	}
-	log.WithField("body_length", len(body)).Debug("Request body loaded")
+	loggerWithTrace(r.Context()).WithField("body_length", len(body)).Debug("Request body loaded")
 
 	var requestBody map[string]json.RawMessage
 	if err := json.Unmarshal(body, &requestBody); err != nil {
-		log.WithError(err).WithField("body", string(body)).Error("Request JSON parse failed")
+		logRequestParseFailure(r.Context(), r, "chat.completions", err)
 		return nil, nil, "", "", false, err
 	}
 
 	var modelName string
 	if rawModel, ok := requestBody["model"]; !ok || json.Unmarshal(rawModel, &modelName) != nil || modelName == "" {
-		log.Error("Request missing model")
+		loggerWithTrace(r.Context()).Error("Request missing model")
 		return nil, nil, "", "", false, errors.New("Model name is required")
 	}
 
@@ -44,7 +44,7 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.Raw
 		}
 	}
 
-	log.WithFields(log.Fields{
+	loggerWithTrace(r.Context()).WithFields(log.Fields{
 		"model":     modelName,
 		"is_stream": isStream,
 		"has_token": userToken != "",
@@ -56,13 +56,13 @@ func (h *ChatHandler) parseRequest(r *http.Request) ([]byte, map[string]json.Raw
 func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Header, requestBody map[string]json.RawMessage, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	updatedBody, err := buildProviderRequestBody(requestBody, config)
 	if err != nil {
-		log.WithError(err).Error("Provider request build failed")
+		loggerWithTrace(ctx).WithError(err).Error("Provider request build failed")
 		return nil, err
 	}
 
 	providerURL := buildProviderChatURL(config.APIBaseURL)
 
-	log.WithFields(log.Fields{
+	loggerWithTrace(ctx).WithFields(log.Fields{
 		"url":         providerURL,
 		"model":       config.ModelName,
 		"is_stream":   isStream,
@@ -71,7 +71,7 @@ func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Head
 
 	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(updatedBody))
 	if err != nil {
-		log.WithError(err).WithField("url", providerURL).Error("Provider request creation failed")
+		loggerWithTrace(ctx).WithError(err).WithField("url", providerURL).Error("Provider request creation failed")
 		return nil, err
 	}
 
@@ -99,12 +99,12 @@ func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Head
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.WithError(err).WithField("url", providerURL).Error("Provider request failed")
+		loggerWithTrace(ctx).WithError(err).WithField("url", providerURL).Error("Provider request failed")
 		return nil, err
 	}
 
 	elapsed := time.Since(startTime)
-	log.WithFields(log.Fields{
+	loggerWithTrace(ctx).WithFields(log.Fields{
 		"url":           providerURL,
 		"status_code":   resp.StatusCode,
 		"response_time": elapsed.Milliseconds(),
