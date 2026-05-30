@@ -64,60 +64,79 @@ func (h *ChatHandler) handleOpenAIStreamResponse(w http.ResponseWriter, resp *ht
 	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
 	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
 	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
-	responseJSON, contentLength, reasoningLength, err := buildOpenAIStreamLogResponse(rawStream.String())
+	streamLog, err := buildOpenAIStreamLogResponse(rawStream.String())
 	if err != nil {
+		fields := log.Fields{
+			"chunks":            chunkCount,
+			"done_seen":         streamLog.DoneSeen,
+			"data_events":       streamLog.DataEvents,
+			"content_chunks":    streamLog.ContentChunks,
+			"tool_call_chunks":  streamLog.ToolCallChunks,
+			"reasoning_chunks":  streamLog.ReasoningChunks,
+			"usage_chunks":      streamLog.UsageChunks,
+			"first_token_ms":    reqLog.FirstTokenLatency,
+			"avg_token_latency": reqLog.AvgTokenLatency,
+		}
 		if err == io.EOF {
-			log.WithField("chunks", chunkCount).Warn("Stream response empty, skipping log")
+			loggerWithTrace(ctx).WithFields(fields).Warn("Stream response had no loggable assistant payload, skipping log")
 			return
 		}
-		log.WithError(err).WithField("chunks", chunkCount).Warn("Stream log payload build failed")
+		loggerWithTrace(ctx).WithError(err).WithFields(fields).Warn("Stream log payload build failed")
 		return
 	}
 
-	reqLog.Response = responseJSON
+	reqLog.Response = streamLog.ResponseJSON
 	loggerWithTrace(ctx).WithFields(log.Fields{
 		"chunks":           chunkCount,
-		"content_length":   contentLength,
-		"reasoning_length": reasoningLength,
+		"content_length":   streamLog.ContentLength,
+		"reasoning_length": streamLog.ReasoningLength,
+		"tool_calls":       len(streamLog.ToolCalls),
 		"backend_model":    config.ModelName,
 	}).Info("Stream response completed")
 }
 
-func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
+type openAIStreamLogResult struct {
+	ResponseJSON    string
+	ContentLength   int
+	ReasoningLength int
+	DataEvents      int
+	ContentChunks   int
+	ReasoningChunks int
+	ToolCallChunks  int
+	UsageChunks     int
+	DoneSeen        bool
+	ToolCalls       []openAIStreamToolCall
+}
+
+type openAIStreamToolCall struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
+}
+
+func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, error) {
+	result := openAIStreamLogResult{}
 	var contentOnly strings.Builder
 	var reasoningContentOnly strings.Builder
-
-	var streamResponse struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		Model   string `json:"model"`
-		Choices []struct {
-			Index int `json:"index"`
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			}
-			FinishReason string      `json:"finish_reason"`
-			Logprobs     interface{} `json:"logprobs"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens       int `json:"prompt_tokens"`
-			CompletionTokens   int `json:"completion_tokens"`
-			TotalTokens        int `json:"total_tokens"`
-			PromptTokensDetail struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_detail"`
-			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
-		} `json:"usage"`
-	}
 
 	var firstID, firstObject, firstModel string
 	var firstCreated int64
 	var hasMetadata bool
-	var sawContent bool
+	var sawLoggablePayload bool
 	var lastFinishReason string
+	var lastUsage struct {
+		PromptTokens          int
+		CompletionTokens      int
+		TotalTokens           int
+		CachedTokens          int
+		PromptCacheHitTokens  int
+		PromptCacheMissTokens int
+	}
+	toolCallsByIndex := make(map[int]*openAIStreamToolCall)
 
 	scanner := bufio.NewScanner(strings.NewReader(rawStream))
 	// Raise the scanner ceiling to tolerate long SSE data lines.
@@ -131,8 +150,48 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 		}
 
 		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if jsonStr == "" || jsonStr == "[DONE]" {
+		if jsonStr == "" {
 			continue
+		}
+		if jsonStr == "[DONE]" {
+			result.DoneSeen = true
+			continue
+		}
+		result.DataEvents++
+
+		var streamResponse struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Index int `json:"index"`
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string      `json:"finish_reason"`
+				Logprobs     interface{} `json:"logprobs"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens       int `json:"prompt_tokens"`
+				CompletionTokens   int `json:"completion_tokens"`
+				TotalTokens        int `json:"total_tokens"`
+				PromptTokensDetail struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_detail"`
+				PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+				PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+			} `json:"usage"`
 		}
 
 		if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err != nil {
@@ -148,16 +207,51 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 			hasMetadata = true
 		}
 
+		if streamResponse.Usage.TotalTokens > 0 || streamResponse.Usage.PromptTokens > 0 || streamResponse.Usage.CompletionTokens > 0 {
+			result.UsageChunks++
+			lastUsage.PromptTokens = streamResponse.Usage.PromptTokens
+			lastUsage.CompletionTokens = streamResponse.Usage.CompletionTokens
+			lastUsage.TotalTokens = streamResponse.Usage.TotalTokens
+			lastUsage.CachedTokens = streamResponse.Usage.PromptTokensDetail.CachedTokens
+			lastUsage.PromptCacheHitTokens = streamResponse.Usage.PromptCacheHitTokens
+			lastUsage.PromptCacheMissTokens = streamResponse.Usage.PromptCacheMissTokens
+		}
+
 		if len(streamResponse.Choices) == 0 {
 			continue
 		}
 		if streamResponse.Choices[0].Delta.Content != "" {
 			contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
-			sawContent = true
+			result.ContentChunks++
+			sawLoggablePayload = true
 		}
 		if streamResponse.Choices[0].Delta.ReasoningContent != "" {
 			reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
-			sawContent = true
+			result.ReasoningChunks++
+			sawLoggablePayload = true
+		}
+		if len(streamResponse.Choices[0].Delta.ToolCalls) > 0 {
+			result.ToolCallChunks++
+			sawLoggablePayload = true
+			for _, chunkToolCall := range streamResponse.Choices[0].Delta.ToolCalls {
+				toolCall := toolCallsByIndex[chunkToolCall.Index]
+				if toolCall == nil {
+					toolCall = &openAIStreamToolCall{Index: chunkToolCall.Index}
+					toolCallsByIndex[chunkToolCall.Index] = toolCall
+				}
+				if chunkToolCall.ID != "" {
+					toolCall.ID = chunkToolCall.ID
+				}
+				if chunkToolCall.Type != "" {
+					toolCall.Type = chunkToolCall.Type
+				}
+				if chunkToolCall.Function.Name != "" {
+					toolCall.Function.Name = chunkToolCall.Function.Name
+				}
+				if chunkToolCall.Function.Arguments != "" {
+					toolCall.Function.Arguments += chunkToolCall.Function.Arguments
+				}
+			}
 		}
 		if streamResponse.Choices[0].FinishReason != "" {
 			lastFinishReason = streamResponse.Choices[0].FinishReason
@@ -165,11 +259,28 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return "", 0, 0, err
+		return result, err
 	}
 
-	if !sawContent {
-		return "", 0, 0, io.EOF
+	if len(toolCallsByIndex) > 0 {
+		toolCalls := make([]openAIStreamToolCall, 0, len(toolCallsByIndex))
+		for idx := 0; idx < len(toolCallsByIndex)+8; idx++ {
+			toolCall := toolCallsByIndex[idx]
+			if toolCall != nil {
+				toolCalls = append(toolCalls, *toolCall)
+				delete(toolCallsByIndex, idx)
+			}
+		}
+		if len(toolCallsByIndex) > 0 {
+			for _, toolCall := range toolCallsByIndex {
+				toolCalls = append(toolCalls, *toolCall)
+			}
+		}
+		result.ToolCalls = toolCalls
+	}
+
+	if !sawLoggablePayload {
+		return result, io.EOF
 	}
 
 	finishReason := lastFinishReason
@@ -185,9 +296,10 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 		Choices []struct {
 			Index   int `json:"index"`
 			Message struct {
-				Role             string `json:"role"`
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content,omitempty"`
+				Role             string                 `json:"role"`
+				Content          string                 `json:"content"`
+				ReasoningContent string                 `json:"reasoning_content,omitempty"`
+				ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string      `json:"finish_reason"`
 			Logprobs     interface{} `json:"logprobs"`
@@ -210,9 +322,10 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 		Choices: []struct {
 			Index   int `json:"index"`
 			Message struct {
-				Role             string `json:"role"`
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content,omitempty"`
+				Role             string                 `json:"role"`
+				Content          string                 `json:"content"`
+				ReasoningContent string                 `json:"reasoning_content,omitempty"`
+				ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string      `json:"finish_reason"`
 			Logprobs     interface{} `json:"logprobs"`
@@ -220,13 +333,15 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 			{
 				Index: 0,
 				Message: struct {
-					Role             string `json:"role"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content,omitempty"`
+					Role             string                 `json:"role"`
+					Content          string                 `json:"content"`
+					ReasoningContent string                 `json:"reasoning_content,omitempty"`
+					ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 				}{
 					Role:             "assistant",
 					Content:          contentOnly.String(),
 					ReasoningContent: reasoningContentOnly.String(),
+					ToolCalls:        result.ToolCalls,
 				},
 				FinishReason: finishReason,
 				Logprobs:     nil,
@@ -234,19 +349,22 @@ func buildOpenAIStreamLogResponse(rawStream string) (string, int, int, error) {
 		},
 	}
 
-	cachedResp.Usage.PromptTokens = streamResponse.Usage.PromptTokens
-	cachedResp.Usage.CompletionTokens = streamResponse.Usage.CompletionTokens
-	cachedResp.Usage.TotalTokens = streamResponse.Usage.TotalTokens
-	cachedResp.Usage.PromptTokensDetail.CachedTokens = streamResponse.Usage.PromptTokensDetail.CachedTokens
-	cachedResp.Usage.PromptCacheHitTokens = streamResponse.Usage.PromptCacheHitTokens
-	cachedResp.Usage.PromptCacheMissTokens = streamResponse.Usage.PromptCacheMissTokens
+	cachedResp.Usage.PromptTokens = lastUsage.PromptTokens
+	cachedResp.Usage.CompletionTokens = lastUsage.CompletionTokens
+	cachedResp.Usage.TotalTokens = lastUsage.TotalTokens
+	cachedResp.Usage.PromptTokensDetail.CachedTokens = lastUsage.CachedTokens
+	cachedResp.Usage.PromptCacheHitTokens = lastUsage.PromptCacheHitTokens
+	cachedResp.Usage.PromptCacheMissTokens = lastUsage.PromptCacheMissTokens
 
 	respData, err := json.Marshal(cachedResp)
 	if err != nil {
-		return "", 0, 0, err
+		return result, err
 	}
 
-	return string(respData), contentOnly.Len(), reasoningContentOnly.Len(), nil
+	result.ResponseJSON = string(respData)
+	result.ContentLength = contentOnly.Len()
+	result.ReasoningLength = reasoningContentOnly.Len()
+	return result, nil
 }
 
 func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
@@ -343,8 +461,9 @@ func lineHasOpenAIStreamToken(line string) bool {
 	var streamResponse struct {
 		Choices []struct {
 			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
+				Content          string            `json:"content"`
+				ReasoningContent string            `json:"reasoning_content"`
+				ToolCalls        []json.RawMessage `json:"tool_calls"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
@@ -356,7 +475,9 @@ func lineHasOpenAIStreamToken(line string) bool {
 		return false
 	}
 
-	return streamResponse.Choices[0].Delta.Content != "" || streamResponse.Choices[0].Delta.ReasoningContent != ""
+	return streamResponse.Choices[0].Delta.Content != "" ||
+		streamResponse.Choices[0].Delta.ReasoningContent != "" ||
+		len(streamResponse.Choices[0].Delta.ToolCalls) > 0
 }
 
 func (h *ChatHandler) handleResponsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {

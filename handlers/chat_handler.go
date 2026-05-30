@@ -73,7 +73,7 @@ func (h *ChatHandler) ChatCompletion(w http.ResponseWriter, r *http.Request) {
 				AvgTokenLatency:   reqLog.AvgTokenLatency,
 			})
 		}
-		if shouldLog && reqLog.Response != "" {
+		if shouldLog && (reqLog.Response != "" || len(reqLog.StreamResponse) > 0) {
 			h.asyncLogWriter.Write(&reqLog)
 		}
 		logContextState(ctx, log.Fields{
@@ -229,7 +229,7 @@ func (h *ChatHandler) AnthropicMessages(w http.ResponseWriter, r *http.Request) 
 				AvgTokenLatency:   reqLog.AvgTokenLatency,
 			})
 		}
-		if shouldLog && reqLog.Response != "" {
+		if shouldLog && (reqLog.Response != "" || len(reqLog.StreamResponse) > 0) {
 			h.asyncLogWriter.Write(&reqLog)
 		}
 		logContextState(ctx, log.Fields{
@@ -561,7 +561,7 @@ func (h *ChatHandler) Responses(w http.ResponseWriter, r *http.Request) {
 				AvgTokenLatency:   reqLog.AvgTokenLatency,
 			})
 		}
-		if shouldLog && reqLog.Response != "" {
+		if shouldLog && (reqLog.Response != "" || len(reqLog.StreamResponse) > 0) {
 			h.asyncLogWriter.Write(&reqLog)
 		}
 		logContextState(ctx, log.Fields{
