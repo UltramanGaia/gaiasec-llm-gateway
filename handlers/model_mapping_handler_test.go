@@ -41,11 +41,16 @@ func decodeObject(t *testing.T, recorder *httptest.ResponseRecorder) map[string]
 func TestGetModelConfigsDoesNotExposeAPIKey(t *testing.T) {
 	db := newModelConfigTestDB(t)
 	if err := db.Create(&models.ModelConfig{
-		Name:       "openai",
-		ModelName:  "gpt-test",
-		APIBaseURL: "https://api.example.test",
-		APIKey:     "secret-key",
-		Enabled:    true,
+		Name:               "openai",
+		ModelName:          "gpt-test",
+		APIBaseURL:         "https://api.example.test",
+		APIKey:             "secret-key",
+		UpstreamType:       models.UpstreamTypeOpenAIResponses,
+		SupportsTools:      true,
+		SupportsStream:     true,
+		SupportsReasoning:  true,
+		SupportsJSONSchema: true,
+		Enabled:            true,
 	}).Error; err != nil {
 		t.Fatalf("failed to seed model config: %v", err)
 	}
@@ -80,6 +85,13 @@ func TestGetModelConfigsDoesNotExposeAPIKey(t *testing.T) {
 	if !apiKeySet {
 		t.Fatalf("expected api_key_set to be true")
 	}
+	var upstreamType string
+	if err := json.Unmarshal(payload[0]["upstream_type"], &upstreamType); err != nil {
+		t.Fatalf("expected upstream_type in response: %v", err)
+	}
+	if upstreamType != string(models.UpstreamTypeOpenAIResponses) {
+		t.Fatalf("expected upstream_type %q, got %q", models.UpstreamTypeOpenAIResponses, upstreamType)
+	}
 }
 
 func TestModifyModelConfigKeepsExistingAPIKeyWhenBlank(t *testing.T) {
@@ -100,11 +112,18 @@ func TestModifyModelConfigKeepsExistingAPIKeyWhenBlank(t *testing.T) {
 		"model_name": "gpt-test-2",
 		"api_base_url": "https://api2.example.test",
 		"api_key": "",
+		"upstream_type": "anthropic_messages",
 		"max_tokens": 4096,
 		"priority": 2,
 		"max_concurrency": 5,
 		"temperature": 0.3,
 		"description": "updated",
+		"supports_tools": true,
+		"supports_stream": true,
+		"supports_reasoning": true,
+		"supports_json_schema": true,
+		"supports_vision": true,
+		"supports_parallel_tool_calls": true,
 		"enabled": true
 	}`)
 	request := httptest.NewRequest(http.MethodPut, "/api/model-configs/1", bytes.NewReader(body))
@@ -133,6 +152,12 @@ func TestModifyModelConfigKeepsExistingAPIKeyWhenBlank(t *testing.T) {
 	}
 	if stored.Name != "openai-updated" {
 		t.Fatalf("expected other fields to be updated, got name %q", stored.Name)
+	}
+	if stored.UpstreamType != models.UpstreamTypeAnthropicMessages {
+		t.Fatalf("expected upstream type to be updated, got %q", stored.UpstreamType)
+	}
+	if !stored.SupportsParallelToolCalls || !stored.SupportsVision {
+		t.Fatalf("expected capability flags to be updated, got %+v", stored)
 	}
 }
 
@@ -224,6 +249,104 @@ func TestTestModelConfigReturnsResultInDataEnvelope(t *testing.T) {
 	}
 	if gotModel != "gpt-test" {
 		t.Fatalf("expected provider model gpt-test, got %q", gotModel)
+	}
+}
+
+func TestTestModelConfigUsesResponsesEndpointForResponsesUpstream(t *testing.T) {
+	db := newModelConfigTestDB(t)
+	var gotPath string
+	var gotAuth string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read provider request: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to decode provider request %q: %v", string(body), err)
+		}
+		if payload["input"] != "ping" {
+			t.Fatalf("expected responses input payload, got %+v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_123","object":"response","status":"completed"}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "responses",
+		ModelName:    "gpt-responses",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/model-configs/1/test", nil)
+	request.SetPathValue("id", "1")
+	recorder := httptest.NewRecorder()
+
+	NewModelConfigHandler(db).TestModelConfig(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/responses" {
+		t.Fatalf("expected responses endpoint, got %q", gotPath)
+	}
+	if gotAuth != "Bearer responses-key" {
+		t.Fatalf("expected bearer auth, got %q", gotAuth)
+	}
+}
+
+func TestTestModelConfigUsesAnthropicEndpointForAnthropicUpstream(t *testing.T) {
+	db := newModelConfigTestDB(t)
+	var gotPath string
+	var gotAPIKey string
+	var gotVersion string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotVersion = r.Header.Get("anthropic-version")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_123","type":"message","role":"assistant","content":[]}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "claude",
+		ModelName:    "claude-sonnet",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/model-configs/1/test", nil)
+	request.SetPathValue("id", "1")
+	recorder := httptest.NewRecorder()
+
+	NewModelConfigHandler(db).TestModelConfig(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/messages" {
+		t.Fatalf("expected anthropic messages endpoint, got %q", gotPath)
+	}
+	if gotAPIKey != "anthropic-key" {
+		t.Fatalf("expected anthropic x-api-key header, got %q", gotAPIKey)
+	}
+	if gotVersion != "2023-06-01" {
+		t.Fatalf("expected anthropic-version header, got %q", gotVersion)
 	}
 }
 

@@ -1,19 +1,29 @@
 # LLM Gateway 架构设计
 
 ## 概述
-LLM Gateway 是一个纯 Go 的中间件服务，将多种 LLM API 聚合到 OpenAI 兼容接口，并对 GaiaSec 暴露模型配置与请求日志能力。
+LLM Gateway 是一个纯 Go 的协议适配网关。当前对外固定暴露三套推理接口：
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+
+对上游则按 `ModelConfig.upstream_type` 区分三类原生协议：
+
+- `openai_chat`
+- `openai_responses`
+- `anthropic_messages`
+
+网关会根据“入站协议 + 上游协议”决定直通或转换，并在转换时通过 `protocol/` 包里的统一 codec 完成请求、非流式响应、流式响应的语义映射。
 
 ## 系统架构
 
-![LLM Gateway Architecture](https://i.imgur.com/placeholder.png)
-
 ### 核心组件
-1. **API 层**：提供 OpenAI 兼容的 RESTful API 接口
-2. **路由层**：根据模型配置将请求路由到对应的上游模型
-3. **配置管理**：通过 `/api/model-configs` 管理命名模型配置
-4. **请求/响应处理**：处理请求转发和响应转换
-5. **日志记录**：记录所有请求和响应信息到 MySQL
-6. **统计接口**：提供 `/api/stats` 等统计查询能力
+1. **API 层**：`handlers/chat_handler.go` 暴露三套公共推理入口。
+2. **统一分发层**：`handlers/protocol_handler.go` 收敛入口逻辑，负责协议识别、模型查找、直通/转换判定、上游请求执行。
+3. **协议适配层**：`protocol/` 负责 request codec、response codec、stream codec/stateful stream codec。
+4. **能力位校验层**：`handlers/protocol_capabilities.go` 根据模型能力位拒绝不支持的能力，或对 `parallel_tool_calls` 做最小收敛。
+5. **路由与运行时层**：`handlers/model_routing.go` 和运行时状态负责优先级、并发限制、重试与失败切换。
+6. **日志与统计层**：请求日志、运行状态与统计接口。
 
 ## 技术栈
 - 后端：Go 语言
@@ -24,34 +34,48 @@ LLM Gateway 是一个纯 Go 的中间件服务，将多种 LLM API 聚合到 Ope
 ## 详细设计
 
 ### 1. 数据模型
-已实现以下数据模型：
-- `ModelConfig`：模型配置，包含对外配置名、上游模型名、基础 URL、API Key 和运行参数
-- `RequestLog`：请求日志，包含用户令牌、模型名称、请求和响应内容
-- `Session`：会话信息，用于请求上下文关联
+- `ModelConfig`
+  - 对外模型名 `name`
+  - 上游模型名 `model_name`
+  - 上游协议类型 `upstream_type`
+  - 能力位 `supports_*`
+  - 路由/运行参数
+- `RequestLog`
+- `Session`
 
 ### 2. API 接口设计
-- `/chat/completions`：OpenAI 兼容的聊天完成接口
-- `/v1/chat/completions`：OpenAI 兼容别名接口
-- `/v1/models`：返回当前可用模型配置
-- `/api/model-configs`：模型配置管理接口
-- `/api/request-logs`：请求日志查询接口
-- `/api/stats`：统计信息接口
+- 推理接口
+  - `/chat/completions`
+  - `/v1/chat/completions`
+  - `/v1/responses`
+  - `/responses`
+  - `/v1/messages`
+- 管理接口
+  - `/api/model-configs`
+  - `/api/request-logs`
+  - `/api/stats`
 
 ### 3. 核心功能实现
-- **请求路由**：根据模型配置查找上游模型并转发请求
-- **配置管理**：统一维护 GaiaSec 可见的模型配置
-- **请求/响应转换**：将不同提供商的 API 格式转换为 OpenAI 兼容格式
-- **日志记录**：记录所有请求和响应，支持按时间、模型、用户等维度查询
+- **统一入口收敛**
+  - 三个入口最终都走 `handleProtocolRequest`
+- **协议转换**
+  - request codec：`protocol/request_codec.go`
+  - non-stream response codec：`protocol/response_codec.go`
+  - stream codec：`protocol/stream_codec.go`
+  - stateful stream codec：`protocol/stream_stateful_codec.go`、`protocol/stream_anthropic_codec.go`
+- **能力位处理**
+  - `tools` / `reasoning` / `json_schema` / `vision` / `stream` 默认显式拒绝
+  - `parallel_tool_calls` 自动收敛
+- **日志记录与追踪**
+  - trace id 贯穿入口、分发和日志
 
 ### 4. 部署与构建
 - 构建产物为单个 Go 二进制 `llm-gateway`
 - Docker 镜像只需要编译 Go 程序，不再包含前端构建阶段
 - 根路径 `/` 返回简单的 `ok` 响应，可用于基础存活探测
 
-## 实现路线图
-1. 完善后端 API 接口
-2. 增强模型路由和请求转发能力
-3. 完善模型配置校验与测试接口
-4. 优化请求/响应格式转换
-5. 完善日志记录、查询与统计功能
-6. 系统测试和优化
+## 当前状态
+- 统一协议分发已落地。
+- `protocol/` 已承载 request codec、non-stream response codec 和大部分 stream codec。
+- handler 中仍有少量收尾逻辑与兼容层需要继续清理。
+- 语义完整性方面，`reasoning`、`structured output`、`vision` 仍需进一步补强。

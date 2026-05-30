@@ -23,19 +23,26 @@ type ModelConfigHandler struct {
 const modelConfigConnectionTestTimeout = 2 * time.Minute
 
 type modelConfigResponse struct {
-	ID             uint      `json:"id"`
-	Name           string    `json:"name"`
-	ModelName      string    `json:"model_name"`
-	APIBaseURL     string    `json:"api_base_url"`
-	APIKeySet      bool      `json:"api_key_set"`
-	MaxTokens      int       `json:"max_tokens"`
-	Priority       int       `json:"priority"`
-	MaxConcurrency int       `json:"max_concurrency"`
-	Temperature    float64   `json:"temperature"`
-	Description    string    `json:"description"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Enabled        bool      `json:"enabled"`
+	ID                        uint                `json:"id"`
+	Name                      string              `json:"name"`
+	ModelName                 string              `json:"model_name"`
+	APIBaseURL                string              `json:"api_base_url"`
+	APIKeySet                 bool                `json:"api_key_set"`
+	UpstreamType              models.UpstreamType `json:"upstream_type"`
+	MaxTokens                 int                 `json:"max_tokens"`
+	Priority                  int                 `json:"priority"`
+	MaxConcurrency            int                 `json:"max_concurrency"`
+	Temperature               float64             `json:"temperature"`
+	Description               string              `json:"description"`
+	SupportsTools             bool                `json:"supports_tools"`
+	SupportsStream            bool                `json:"supports_stream"`
+	SupportsReasoning         bool                `json:"supports_reasoning"`
+	SupportsJSONSchema        bool                `json:"supports_json_schema"`
+	SupportsVision            bool                `json:"supports_vision"`
+	SupportsParallelToolCalls bool                `json:"supports_parallel_tool_calls"`
+	CreatedAt                 time.Time           `json:"created_at"`
+	UpdatedAt                 time.Time           `json:"updated_at"`
+	Enabled                   bool                `json:"enabled"`
 }
 
 func NewModelConfigHandler(db *gorm.DB) *ModelConfigHandler {
@@ -46,19 +53,26 @@ func NewModelConfigHandler(db *gorm.DB) *ModelConfigHandler {
 
 func toModelConfigResponse(config models.ModelConfig) modelConfigResponse {
 	return modelConfigResponse{
-		ID:             config.ID,
-		Name:           config.Name,
-		ModelName:      config.ModelName,
-		APIBaseURL:     config.APIBaseURL,
-		APIKeySet:      strings.TrimSpace(config.APIKey) != "",
-		MaxTokens:      config.MaxTokens,
-		Priority:       config.Priority,
-		MaxConcurrency: config.MaxConcurrency,
-		Temperature:    config.Temperature,
-		Description:    config.Description,
-		CreatedAt:      config.CreatedAt,
-		UpdatedAt:      config.UpdatedAt,
-		Enabled:        config.Enabled,
+		ID:                        config.ID,
+		Name:                      config.Name,
+		ModelName:                 config.ModelName,
+		APIBaseURL:                config.APIBaseURL,
+		APIKeySet:                 strings.TrimSpace(config.APIKey) != "",
+		UpstreamType:              config.UpstreamType,
+		MaxTokens:                 config.MaxTokens,
+		Priority:                  config.Priority,
+		MaxConcurrency:            config.MaxConcurrency,
+		Temperature:               config.Temperature,
+		Description:               config.Description,
+		SupportsTools:             config.SupportsTools,
+		SupportsStream:            config.SupportsStream,
+		SupportsReasoning:         config.SupportsReasoning,
+		SupportsJSONSchema:        config.SupportsJSONSchema,
+		SupportsVision:            config.SupportsVision,
+		SupportsParallelToolCalls: config.SupportsParallelToolCalls,
+		CreatedAt:                 config.CreatedAt,
+		UpdatedAt:                 config.UpdatedAt,
+		Enabled:                   config.Enabled,
 	}
 }
 
@@ -71,6 +85,9 @@ func toModelConfigResponses(configs []models.ModelConfig) []modelConfigResponse 
 }
 
 func normalizeModelConfig(config *models.ModelConfig) {
+	if strings.TrimSpace(string(config.UpstreamType)) == "" {
+		config.UpstreamType = models.DefaultUpstreamType
+	}
 	if config.Priority < 0 {
 		config.Priority = 0
 	}
@@ -92,6 +109,11 @@ func validateModelConfig(config *models.ModelConfig) error {
 	if !strings.HasPrefix(config.APIBaseURL, "http://") && !strings.HasPrefix(config.APIBaseURL, "https://") {
 		return errors.New("api_base_url must start with http:// or https://")
 	}
+	switch config.UpstreamType {
+	case models.UpstreamTypeOpenAIChat, models.UpstreamTypeOpenAIResponses, models.UpstreamTypeAnthropicMessages:
+	default:
+		return fmt.Errorf("unsupported upstream_type %q", config.UpstreamType)
+	}
 	return nil
 }
 
@@ -103,9 +125,11 @@ type modelConfigConnectionTestResult struct {
 }
 
 func testModelConfigConnection(ctx context.Context, config models.ModelConfig) modelConfigConnectionTestResult {
+	providerURL := testModelConfigProviderURL(config)
+	requestPayload := testModelConfigPayload(config)
 	input := map[string]any{
 		"method": "POST",
-		"url":    buildProviderChatURL(config.APIBaseURL),
+		"url":    providerURL,
 		"headers": map[string]string{
 			"Content-Type": "application/json",
 		},
@@ -121,15 +145,6 @@ func testModelConfigConnection(ctx context.Context, config models.ModelConfig) m
 		return modelConfigConnectionTestResult{Success: false, Message: "model_name is required", Input: input, Output: map[string]any{"error": "model_name is required"}}
 	}
 
-	requestPayload := map[string]any{
-		"model": config.ModelName,
-		"messages": []map[string]string{
-			{"role": "user", "content": "ping"},
-		},
-		"max_tokens":  1,
-		"temperature": 0,
-		"stream":      false,
-	}
 	input["body"] = requestPayload
 
 	body, err := json.Marshal(requestPayload)
@@ -137,13 +152,21 @@ func testModelConfigConnection(ctx context.Context, config models.ModelConfig) m
 		return modelConfigConnectionTestResult{Success: false, Message: err.Error(), Input: input, Output: map[string]any{"error": err.Error()}}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildProviderChatURL(config.APIBaseURL), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, providerURL, bytes.NewReader(body))
 	if err != nil {
 		return modelConfigConnectionTestResult{Success: false, Message: err.Error(), Input: input, Output: map[string]any{"error": err.Error()}}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if strings.TrimSpace(config.APIKey) != "" {
-		req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	switch config.UpstreamType {
+	case models.UpstreamTypeAnthropicMessages:
+		req.Header.Set("anthropic-version", "2023-06-01")
+		if strings.TrimSpace(config.APIKey) != "" {
+			req.Header.Set("x-api-key", config.APIKey)
+		}
+	default:
+		if strings.TrimSpace(config.APIKey) != "" {
+			req.Header.Set("Authorization", "Bearer "+config.APIKey)
+		}
 	}
 
 	startedAt := time.Now()
@@ -186,6 +209,47 @@ func testModelConfigConnection(ctx context.Context, config models.ModelConfig) m
 		Message: fmt.Sprintf("连接测试失败: upstream returned %d %s", resp.StatusCode, detail),
 		Input:   input,
 		Output:  output,
+	}
+}
+
+func testModelConfigProviderURL(config models.ModelConfig) string {
+	switch config.UpstreamType {
+	case models.UpstreamTypeOpenAIResponses:
+		return buildProviderResponsesURL(config.APIBaseURL)
+	case models.UpstreamTypeAnthropicMessages:
+		return buildAnthropicMessagesURL(config.APIBaseURL)
+	default:
+		return buildProviderChatURL(config.APIBaseURL)
+	}
+}
+
+func testModelConfigPayload(config models.ModelConfig) map[string]any {
+	switch config.UpstreamType {
+	case models.UpstreamTypeOpenAIResponses:
+		return map[string]any{
+			"model":             config.ModelName,
+			"input":             "ping",
+			"max_output_tokens": 1,
+			"temperature":       0,
+			"stream":            false,
+		}
+	case models.UpstreamTypeAnthropicMessages:
+		return map[string]any{
+			"model":      config.ModelName,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 1,
+			"stream":     false,
+		}
+	default:
+		return map[string]any{
+			"model": config.ModelName,
+			"messages": []map[string]string{
+				{"role": "user", "content": "ping"},
+			},
+			"max_tokens":  1,
+			"temperature": 0,
+			"stream":      false,
+		}
 	}
 }
 
@@ -353,20 +417,34 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 	config.MaxConcurrency = input.MaxConcurrency
 	config.Temperature = input.Temperature
 	config.Description = input.Description
+	config.UpstreamType = input.UpstreamType
+	config.SupportsTools = input.SupportsTools
+	config.SupportsStream = input.SupportsStream
+	config.SupportsReasoning = input.SupportsReasoning
+	config.SupportsJSONSchema = input.SupportsJSONSchema
+	config.SupportsVision = input.SupportsVision
+	config.SupportsParallelToolCalls = input.SupportsParallelToolCalls
 	config.Enabled = input.Enabled
 	config.UpdatedAt = time.Now()
 
 	updates := map[string]any{
-		"name":            config.Name,
-		"model_name":      config.ModelName,
-		"api_base_url":    config.APIBaseURL,
-		"max_tokens":      config.MaxTokens,
-		"priority":        config.Priority,
-		"max_concurrency": config.MaxConcurrency,
-		"temperature":     config.Temperature,
-		"description":     config.Description,
-		"enabled":         config.Enabled,
-		"updated_at":      config.UpdatedAt,
+		"name":                         config.Name,
+		"model_name":                   config.ModelName,
+		"api_base_url":                 config.APIBaseURL,
+		"upstream_type":                config.UpstreamType,
+		"max_tokens":                   config.MaxTokens,
+		"priority":                     config.Priority,
+		"max_concurrency":              config.MaxConcurrency,
+		"temperature":                  config.Temperature,
+		"description":                  config.Description,
+		"supports_tools":               config.SupportsTools,
+		"supports_stream":              config.SupportsStream,
+		"supports_reasoning":           config.SupportsReasoning,
+		"supports_json_schema":         config.SupportsJSONSchema,
+		"supports_vision":              config.SupportsVision,
+		"supports_parallel_tool_calls": config.SupportsParallelToolCalls,
+		"enabled":                      config.Enabled,
+		"updated_at":                   config.UpdatedAt,
 	}
 	if strings.TrimSpace(input.APIKey) != "" {
 		updates["api_key"] = config.APIKey

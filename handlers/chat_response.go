@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"llm-gateway/models"
+	"llm-gateway/protocol"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -499,11 +500,8 @@ func (h *ChatHandler) handleResponsesNonStreamResponse(w http.ResponseWriter, re
 		reqLog.Response = string(respBodyDecode)
 	}
 
-	var chatResp map[string]interface{}
-	if err := json.Unmarshal(respBodyDecode, &chatResp); err == nil {
-		responsesResp := convertChatResponseToResponses(chatResp)
-		responsesBody, err := json.Marshal(responsesResp)
-		if err == nil {
+	if ir, err := protocol.DecodeOpenAIChatResponse(respBodyDecode); err == nil {
+		if responsesBody, err := protocol.EncodeResponsesResponse(ir, ir.Model); err == nil {
 			w.Write(responsesBody)
 			reqLog.Response = string(responsesBody)
 			if reqLog.FirstTokenLatency == 0 {
@@ -522,6 +520,418 @@ func (h *ChatHandler) handleResponsesNonStreamResponse(w http.ResponseWriter, re
 	}
 	log.WithField("response_length", len(respBody)).Info("Responses non-stream response passthrough")
 	return nil
+}
+
+func (h *ChatHandler) handleChatFromResponsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Responses provider response read failed")
+		return err
+	}
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	decodedBody, err := gzipDecode(respBody)
+	if err != nil {
+		decodedBody = respBody
+	}
+	chatBody, err := convertResponsesResponseToChatResponse(decodedBody, config.ModelName)
+	if err != nil {
+		w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+
+	_, _ = w.Write(chatBody)
+	reqLog.Response = string(chatBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
+	return nil
+}
+
+func (h *ChatHandler) handleChatFromAnthropicNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Anthropic provider response read failed")
+		return err
+	}
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	decodedBody, err := gzipDecode(respBody)
+	if err != nil {
+		decodedBody = respBody
+	}
+	chatBody, err := convertAnthropicResponseToChatResponse(decodedBody, config.ModelName)
+	if err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+
+	_, _ = w.Write(chatBody)
+	reqLog.Response = string(chatBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
+	return nil
+}
+
+func (h *ChatHandler) handleAnthropicFromChatNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Chat provider response read failed")
+		return err
+	}
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	decodedBody, err := gzipDecode(respBody)
+	if err != nil {
+		decodedBody = respBody
+	}
+
+	var chatResp map[string]interface{}
+	if err := json.Unmarshal(decodedBody, &chatResp); err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+
+	anthropicBody, err := convertChatResponseToAnthropicResponse(chatResp, config.ModelName)
+	if err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+
+	_, _ = w.Write(anthropicBody)
+	reqLog.Response = string(anthropicBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
+	return nil
+}
+
+func (h *ChatHandler) handleResponsesFromAnthropicNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Anthropic provider response read failed")
+		return err
+	}
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	decodedBody, err := gzipDecode(respBody)
+	if err != nil {
+		decodedBody = respBody
+	}
+	responsesBody, err := convertAnthropicResponseToResponsesResponse(decodedBody, config.ModelName)
+	if err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+
+	_, _ = w.Write(responsesBody)
+	reqLog.Response = string(responsesBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
+	return nil
+}
+
+func (h *ChatHandler) handleAnthropicFromResponsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) error {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Error("Responses provider response read failed")
+		return err
+	}
+	if len(respBody) == 0 {
+		return nil
+	}
+
+	decodedBody, err := gzipDecode(respBody)
+	if err != nil {
+		decodedBody = respBody
+	}
+	chatBody, err := convertResponsesResponseToChatResponse(decodedBody, config.ModelName)
+	if err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+	var chatResp map[string]interface{}
+	if err := json.Unmarshal(chatBody, &chatResp); err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+	anthropicBody, err := convertChatResponseToAnthropicResponse(chatResp, config.ModelName)
+	if err != nil {
+		_, _ = w.Write(respBody)
+		reqLog.Response = string(decodedBody)
+		return nil
+	}
+
+	_, _ = w.Write(anthropicBody)
+	reqLog.Response = string(anthropicBody)
+	if reqLog.FirstTokenLatency == 0 {
+		reqLog.FirstTokenLatency = reqLog.ResponseTime
+	}
+	return nil
+}
+
+func (h *ChatHandler) handleChatFromAnthropicStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
+	var rawStream bytes.Buffer
+	var outStream bytes.Buffer
+	metrics := newStreamMetricsTracker()
+	state := protocol.NewAnthropicInboundState()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	for {
+		frame, err := protocol.ReadSSEFrame(reader)
+		if err != nil {
+			if err != io.EOF {
+				loggerWithTrace(ctx).WithError(err).Warn("Anthropic stream read failed")
+			}
+			break
+		}
+		rawStream.WriteString(protocol.FormatSSEFrame(frame))
+		chunks, done := protocol.ChatChunksFromAnthropicFrame(frame, state)
+		for _, chunk := range chunks {
+			if lineHasOpenAIStreamToken("data: " + mustJSON(chunk)) {
+				metrics.Record(time.Now())
+			}
+			line := "data: " + mustJSON(chunk) + "\n\n"
+			outStream.WriteString(line)
+			_, _ = w.Write([]byte(line))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if done {
+			outStream.WriteString("data: [DONE]\n\n")
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			break
+		}
+	}
+	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
+	reqLog.Response = outStream.String()
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+}
+
+func (h *ChatHandler) handleResponsesFromAnthropicStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
+	var rawStream bytes.Buffer
+	var outStream bytes.Buffer
+	metrics := newStreamMetricsTracker()
+	state := protocol.NewAnthropicInboundState()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
+	reader := bufio.NewReader(resp.Body)
+	var seqNum int64
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	for {
+		frame, err := protocol.ReadSSEFrame(reader)
+		if err != nil {
+			if err != io.EOF {
+				loggerWithTrace(ctx).WithError(err).Warn("Anthropic stream read failed")
+			}
+			break
+		}
+		rawStream.WriteString(protocol.FormatSSEFrame(frame))
+		events, done, responseID, model := protocol.ResponsesEventsFromAnthropicFrame(frame, state, &seqNum)
+		for _, event := range events {
+			if event.Event == "response.output_text.delta" || event.Event == "response.function_call_arguments.delta" {
+				metrics.Record(time.Now())
+			}
+			line := protocol.FormatResponsesStreamEvent(event)
+			outStream.WriteString(line)
+			_, _ = w.Write([]byte(line))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if done {
+			h.writeResponsesStreamDone(w, responseID, model, seqNum)
+			outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesDoneEvent(responseID, model, seqNum+1)))
+			outStream.WriteString("data: [DONE]\n\n")
+			break
+		}
+	}
+	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
+	reqLog.Response = outStream.String()
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+}
+
+func (h *ChatHandler) handleChatFromResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
+	var rawStream bytes.Buffer
+	var outStream bytes.Buffer
+	metrics := newStreamMetricsTracker()
+	state := protocol.NewResponsesStreamState()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	for {
+		frame, err := protocol.ReadSSEFrame(reader)
+		if err != nil {
+			if err != io.EOF {
+				loggerWithTrace(ctx).WithError(err).Warn("Responses stream read failed")
+			}
+			break
+		}
+		if frame.Event != "" {
+			rawStream.WriteString("event: " + frame.Event + "\n")
+		}
+		rawStream.WriteString("data: " + frame.Data + "\n\n")
+		chunks, done := protocol.ChatChunksFromResponsesFrame(frame, state)
+		for _, chunk := range chunks {
+			if lineHasOpenAIStreamToken("data: " + mustJSON(chunk)) {
+				metrics.Record(time.Now())
+			}
+			line := "data: " + mustJSON(chunk) + "\n\n"
+			outStream.WriteString(line)
+			_, _ = w.Write([]byte(line))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if done {
+			outStream.WriteString("data: [DONE]\n\n")
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			break
+		}
+	}
+	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
+	reqLog.Response = outStream.String()
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+}
+
+func (h *ChatHandler) handleAnthropicFromChatStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
+	var rawStream bytes.Buffer
+	var outStream bytes.Buffer
+	metrics := newStreamMetricsTracker()
+	state := protocol.NewAnthropicOutboundState()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				loggerWithTrace(ctx).WithError(err).Warn("Chat stream read failed")
+			}
+			break
+		}
+		rawStream.WriteString(line)
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		dataStr := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if dataStr == "" {
+			continue
+		}
+		if dataStr == "[DONE]" {
+			for _, frame := range protocol.FlushAnthropicFrames(state, true) {
+				text := protocol.FormatSSEFrame(frame)
+				outStream.WriteString(text)
+				_, _ = w.Write([]byte(text))
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+			break
+		}
+		var chatChunk map[string]interface{}
+		if err := json.Unmarshal([]byte(dataStr), &chatChunk); err != nil {
+			continue
+		}
+		if lineHasOpenAIStreamToken(line) {
+			metrics.Record(time.Now())
+		}
+		for _, frame := range protocol.AnthropicFramesFromChatChunk(chatChunk, state) {
+			text := protocol.FormatSSEFrame(frame)
+			outStream.WriteString(text)
+			_, _ = w.Write([]byte(text))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
+	reqLog.Response = outStream.String()
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+}
+
+func (h *ChatHandler) handleAnthropicFromResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
+	var rawStream bytes.Buffer
+	var outStream bytes.Buffer
+	metrics := newStreamMetricsTracker()
+	state := protocol.NewAnthropicOutboundState()
+	ctx := context.Background()
+	if resp != nil && resp.Request != nil {
+		ctx = resp.Request.Context()
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	for {
+		frame, err := protocol.ReadSSEFrame(reader)
+		if err != nil {
+			if err != io.EOF {
+				loggerWithTrace(ctx).WithError(err).Warn("Responses stream read failed")
+			}
+			break
+		}
+		rawStream.WriteString(protocol.FormatSSEFrame(protocol.SSEFrame{Event: frame.Event, Data: frame.Data}))
+		for _, anthropicFrame := range protocol.AnthropicEventsFromResponsesFrame(frame, state) {
+			if anthropicFrame.Event == "content_block_delta" {
+				metrics.Record(time.Now())
+			}
+			text := protocol.FormatSSEFrame(anthropicFrame)
+			outStream.WriteString(text)
+			_, _ = w.Write([]byte(text))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+	reqLog.StreamResponse = append(reqLog.StreamResponse[:0], rawStream.Bytes()...)
+	reqLog.Response = outStream.String()
+	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
+	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
 }
 
 func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {
@@ -603,9 +1013,9 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 			if choices, ok := chatChunk["choices"].([]interface{}); ok && len(choices) > 0 {
 				chunkCount++
 				metrics.Record(time.Now())
-				responsesEvents := convertChatStreamChunkToResponsesEvents(chatChunk, seqNum)
+				responsesEvents := protocol.ConvertChatChunkToResponsesEvents(chatChunk, seqNum)
 				for _, event := range responsesEvents {
-					eventLine := formatResponsesStreamEvent(event)
+					eventLine := protocol.FormatResponsesStreamEvent(event)
 					w.Write([]byte(eventLine))
 					if flusher != nil {
 						flusher.Flush()
@@ -635,116 +1045,8 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 	}).Info("Responses stream response completed")
 }
 
-func convertChatStreamChunkToResponsesEvents(chatChunk map[string]interface{}, seqNum int64) []ResponsesStreamEvent {
-	events := make([]ResponsesStreamEvent, 0)
-
-	if choices, ok := chatChunk["choices"].([]interface{}); ok {
-		for _, ch := range choices {
-			choice, ok := ch.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			idx := 0
-			if i, ok := choice["index"].(float64); ok {
-				idx = int(i)
-			}
-
-			delta, ok := choice["delta"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			if role, ok := delta["role"].(string); ok && role == "assistant" {
-				events = append(events, ResponsesStreamEvent{
-					Event: "response.output_item.added",
-					Data: map[string]interface{}{
-						"type":            "response.output_item.added",
-						"sequence_number": seqNum,
-						"output_index":    idx,
-						"item": map[string]interface{}{
-							"type":   "message",
-							"status": "in_progress",
-							"role":   "assistant",
-						},
-					},
-				})
-			}
-
-			if content, ok := delta["content"].(string); ok && content != "" {
-				events = append(events, ResponsesStreamEvent{
-					Event: "response.output_text.delta",
-					Data: map[string]interface{}{
-						"type":            "response.output_text.delta",
-						"sequence_number": seqNum,
-						"output_index":    idx,
-						"content_index":   0,
-						"delta":           content,
-					},
-				})
-			}
-
-			if toolCalls, ok := delta["tool_calls"].([]interface{}); ok {
-				for _, tc := range toolCalls {
-					toolCall, ok := tc.(map[string]interface{})
-					if !ok {
-						continue
-					}
-					tcID, _ := toolCall["id"].(string)
-					fn, _ := toolCall["function"].(map[string]interface{})
-					name, _ := fn["name"].(string)
-					args, _ := fn["arguments"].(string)
-
-					if tcID != "" && name != "" {
-						events = append(events, ResponsesStreamEvent{
-							Event: "response.output_item.added",
-							Data: map[string]interface{}{
-								"type":            "response.output_item.added",
-								"sequence_number": seqNum,
-								"output_index":    idx + 100,
-								"item": map[string]interface{}{
-									"type":    "function_call",
-									"id":      tcID,
-									"call_id": tcID,
-									"name":    name,
-									"status":  "in_progress",
-								},
-							},
-						})
-					}
-
-					if args != "" {
-						events = append(events, ResponsesStreamEvent{
-							Event: "response.function_call_arguments.delta",
-							Data: map[string]interface{}{
-								"type":            "response.function_call_arguments.delta",
-								"sequence_number": seqNum,
-								"output_index":    idx + 100,
-								"delta":           args,
-							},
-						})
-					}
-				}
-			}
-
-			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-				events = append(events, ResponsesStreamEvent{
-					Event: "response.output_item.done",
-					Data: map[string]interface{}{
-						"type":            "response.output_item.done",
-						"sequence_number": seqNum,
-						"output_index":    idx,
-						"item": map[string]interface{}{
-							"type":   "message",
-							"status": "completed",
-							"role":   "assistant",
-						},
-					},
-				})
-			}
-		}
-	}
-
-	return events
+func convertChatStreamChunkToResponsesEvents(chatChunk map[string]interface{}, seqNum int64) []protocol.ResponsesStreamEvent {
+	return protocol.ConvertChatChunkToResponsesEvents(chatChunk, seqNum)
 }
 
 func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, model string, usage map[string]interface{}, seqNum int64) {
@@ -758,25 +1060,11 @@ func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, m
 		outputTokens = int(ct)
 	}
 
-	event := ResponsesStreamEvent{
-		Event: "response.completed",
-		Data: map[string]interface{}{
-			"type":            "response.completed",
-			"sequence_number": seqNum,
-			"response": map[string]interface{}{
-				"id":     id,
-				"object": "response",
-				"status": "completed",
-				"model":  model,
-				"usage": map[string]interface{}{
-					"input_tokens":  inputTokens,
-					"output_tokens": outputTokens,
-					"total_tokens":  inputTokens + outputTokens,
-				},
-			},
-		},
-	}
-	w.Write([]byte(formatResponsesStreamEvent(event)))
+	event := protocol.BuildResponsesCompletedEvent(id, model, map[string]interface{}{
+		"prompt_tokens":     inputTokens,
+		"completion_tokens": outputTokens,
+	}, seqNum)
+	w.Write([]byte(protocol.FormatResponsesStreamEvent(event)))
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -784,32 +1072,15 @@ func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, m
 
 func (h *ChatHandler) writeResponsesStreamDone(w http.ResponseWriter, id, model string, seqNum int64) {
 	seqNum++
-	event := ResponsesStreamEvent{
-		Event: "response.completed",
-		Data: map[string]interface{}{
-			"type":            "response.completed",
-			"sequence_number": seqNum,
-			"response": map[string]interface{}{
-				"id":     id,
-				"object": "response",
-				"status": "completed",
-				"model":  model,
-			},
-		},
-	}
-	w.Write([]byte(formatResponsesStreamEvent(event)))
+	event := protocol.BuildResponsesDoneEvent(id, model, seqNum)
+	w.Write([]byte(protocol.FormatResponsesStreamEvent(event)))
 	w.Write([]byte("data: [DONE]\n\n"))
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
-func formatResponsesStreamEvent(event ResponsesStreamEvent) string {
-	data, _ := json.Marshal(event.Data)
-	return "event: " + event.Event + "\ndata: " + string(data) + "\n\n"
-}
-
-type ResponsesStreamEvent struct {
-	Event string
-	Data  interface{}
+func mustJSON(v interface{}) string {
+	data, _ := json.Marshal(v)
+	return string(data)
 }

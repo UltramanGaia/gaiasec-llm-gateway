@@ -118,11 +118,17 @@
                 <span class="info-text">{{ truncate(config.apiBaseUrl, 40) }}</span>
               </el-tooltip>
             </div>
+            <div class="info-item">
+              <el-tag size="small" effect="plain">{{ formatUpstreamType(config.upstreamType) }}</el-tag>
+            </div>
             <div v-if="config.description" class="info-item">
               <el-icon class="info-icon"><Document /></el-icon>
               <el-tooltip :content="config.description" placement="top">
                 <span class="info-text">{{ truncate(config.description, 50) }}</span>
               </el-tooltip>
+            </div>
+            <div class="capability-tags">
+              <el-tag v-for="tag in capabilityTags(config)" :key="tag" size="small" effect="light" type="info">{{ tag }}</el-tag>
             </div>
 
             <div class="core-metrics">
@@ -190,6 +196,13 @@
           <el-form-item label="模型名称" prop="modelName">
             <el-input v-model="form.modelName" placeholder="请输入模型名称" />
           </el-form-item>
+          <el-form-item label="上游协议" prop="upstreamType">
+            <el-select v-model="form.upstreamType" placeholder="请选择上游协议" style="width: 100%;">
+              <el-option label="OpenAI Chat" value="openai_chat" />
+              <el-option label="OpenAI Responses" value="openai_responses" />
+              <el-option label="Anthropic Messages" value="anthropic_messages" />
+            </el-select>
+          </el-form-item>
           <el-form-item label="API地址" prop="apiBaseUrl">
             <el-input v-model="form.apiBaseUrl" placeholder="请输入API地址" />
           </el-form-item>
@@ -218,6 +231,16 @@
           </el-form-item>
           <el-form-item label="描述">
             <el-input v-model="form.description" type="textarea" :rows="3" placeholder="请输入描述信息" />
+          </el-form-item>
+          <el-form-item label="能力位">
+            <div class="capability-grid">
+              <el-switch v-model="form.supportsTools" inline-prompt active-text="Tools" inactive-text="Tools" />
+              <el-switch v-model="form.supportsStream" inline-prompt active-text="Stream" inactive-text="Stream" />
+              <el-switch v-model="form.supportsReasoning" inline-prompt active-text="Reasoning" inactive-text="Reasoning" />
+              <el-switch v-model="form.supportsJsonSchema" inline-prompt active-text="JSON Schema" inactive-text="JSON Schema" />
+              <el-switch v-model="form.supportsVision" inline-prompt active-text="Vision" inactive-text="Vision" />
+              <el-switch v-model="form.supportsParallelToolCalls" inline-prompt active-text="Parallel Tools" inactive-text="Parallel Tools" />
+            </div>
           </el-form-item>
           <el-form-item label="启用状态">
             <el-switch v-model="form.enabled" />
@@ -257,14 +280,22 @@ let statsTimer = null;
 
 const defaultForm = () => ({
   name: '', modelName: '', apiBaseUrl: '', apiKey: '',
+  upstreamType: 'openai_chat',
   maxTokens: 32000, priority: 0, maxConcurrency: 0, temperature: 0.7,
   description: '', enabled: true,
+  supportsTools: false,
+  supportsStream: true,
+  supportsReasoning: false,
+  supportsJsonSchema: false,
+  supportsVision: false,
+  supportsParallelToolCalls: false,
 });
 const form = ref(defaultForm());
 
 const rules = {
   name: [{ required: true, message: '请输入配置名称', trigger: 'blur' }],
   modelName: [{ required: true, message: '请输入模型名称', trigger: 'blur' }],
+  upstreamType: [{ required: true, message: '请选择上游协议', trigger: 'change' }],
   apiBaseUrl: [{ required: true, message: '请输入API地址', trigger: 'blur' }],
 };
 
@@ -334,23 +365,37 @@ const normalizeModelConfig = (config = {}) => ({
   apiBaseUrl: config.apiBaseUrl ?? config.api_base_url ?? '',
   apiKey: '',
   apiKeySet: config.apiKeySet ?? config.api_key_set ?? false,
+  upstreamType: config.upstreamType ?? config.upstream_type ?? 'openai_chat',
   maxTokens: config.maxTokens ?? config.max_tokens ?? 32000,
   priority: config.priority ?? 0,
   maxConcurrency: config.maxConcurrency ?? config.max_concurrency ?? 0,
   temperature: config.temperature ?? 0.7,
   description: config.description ?? '',
   enabled: config.enabled ?? true,
+  supportsTools: config.supportsTools ?? config.supports_tools ?? false,
+  supportsStream: config.supportsStream ?? config.supports_stream ?? true,
+  supportsReasoning: config.supportsReasoning ?? config.supports_reasoning ?? false,
+  supportsJsonSchema: config.supportsJsonSchema ?? config.supports_json_schema ?? false,
+  supportsVision: config.supportsVision ?? config.supports_vision ?? false,
+  supportsParallelToolCalls: config.supportsParallelToolCalls ?? config.supports_parallel_tool_calls ?? false,
 });
 
 const buildModelConfigPayload = (config, overrides = {}) => ({
   name: overrides.name ?? config.name,
   model_name: overrides.modelName ?? config.modelName,
   api_base_url: overrides.apiBaseUrl ?? config.apiBaseUrl,
+  upstream_type: overrides.upstreamType ?? config.upstreamType,
   max_tokens: overrides.maxTokens ?? config.maxTokens,
   priority: overrides.priority ?? config.priority,
   max_concurrency: overrides.maxConcurrency ?? config.maxConcurrency,
   temperature: overrides.temperature ?? config.temperature,
   description: overrides.description ?? config.description,
+  supports_tools: overrides.supportsTools ?? config.supportsTools,
+  supports_stream: overrides.supportsStream ?? config.supportsStream,
+  supports_reasoning: overrides.supportsReasoning ?? config.supportsReasoning,
+  supports_json_schema: overrides.supportsJsonSchema ?? config.supportsJsonSchema,
+  supports_vision: overrides.supportsVision ?? config.supportsVision,
+  supports_parallel_tool_calls: overrides.supportsParallelToolCalls ?? config.supportsParallelToolCalls,
   enabled: overrides.enabled ?? config.enabled,
   ...(overrides.apiKey ? { api_key: overrides.apiKey } : {}),
 });
@@ -583,6 +628,19 @@ const truncate = (text, max) => text?.length > max ? text.substring(0, max) + '.
 const formatLatency = (v) => v ? `${Math.round(v)}ms` : '-';
 const formatPercent = (v) => v !== undefined && v !== null ? `${(v * 100).toFixed(1)}%` : '-';
 const formatScore = (v) => v !== undefined && v !== null ? v.toFixed(0) : '-';
+const formatUpstreamType = (v) => ({
+  openai_chat: 'OpenAI Chat',
+  openai_responses: 'OpenAI Responses',
+  anthropic_messages: 'Anthropic Messages',
+}[v] || v || 'Unknown');
+const capabilityTags = (config) => ([
+  config.supportsTools && 'Tools',
+  config.supportsStream && 'Stream',
+  config.supportsReasoning && 'Reasoning',
+  config.supportsJsonSchema && 'JSON Schema',
+  config.supportsVision && 'Vision',
+  config.supportsParallelToolCalls && 'Parallel Tools',
+].filter(Boolean));
 const getWaitingRequests = (config) => getStat(config)?.waitingRequests || 0;
 const getScoreColor = (v) => {
   if (v === undefined || v === null) return '#909399';
@@ -618,6 +676,8 @@ onBeforeUnmount(() => { if (statsTimer) clearInterval(statsTimer); });
 .stat-label { font-size: 14px; color: var(--el-text-color-secondary); }
 .toolbar-card { margin-bottom: 20px; border-radius: 8px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; }
+.capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; }
+.capability-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .toolbar-left { display: flex; align-items: center; }
 .toolbar-right { display: flex; gap: 12px; }
 .drag-hint {

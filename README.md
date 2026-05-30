@@ -1,23 +1,36 @@
 # LLM Gateway
 
 ## Overview
-LLM Gateway is a Go service that aggregates multiple LLM API interfaces into a single OpenAI-compatible interface. In GaiaSec it owns model configuration, request routing, and request log querying.
+LLM Gateway is a Go service that exposes multiple LLM-facing protocols behind one gateway. In GaiaSec it owns:
+- protocol-compatible inference entrypoints
+- model configuration management
+- request routing and upstream failover
+- request log querying
 
 ## Features
-1. **Unified Interface**: Provides an OpenAI-compatible API to access multiple LLM providers
-2. **Model Configuration**: Stores named model configs used by the OpenAI-compatible entrypoints
-3. **Request Routing**: Routes requests to the appropriate upstream model endpoint based on config name
-4. **Logging**: Records all requests and responses for auditing and analysis
+1. **Multi-Protocol Gateway**: Supports `/v1/chat/completions`, `/v1/responses`, `/v1/messages`
+2. **Explicit Upstream Modeling**: Each `ModelConfig` declares `upstream_type` and capability flags
+3. **Protocol Adapter Layer**: Uses a shared `protocol/` package to convert request/response/stream semantics
+4. **Routing and Failover**: Selects a backend config by name with retry and concurrency control
+5. **Logging**: Records requests and responses for auditing and analysis
 
 ## Architecture
-![LLM Gateway Architecture](https://i.imgur.com/placeholder.png)
+The gateway now uses a hub-and-spoke adapter shape:
+
+- inbound protocol request
+- decode to shared IR-like protocol model in `protocol/`
+- encode to target upstream protocol
+- call upstream
+- decode upstream response/stream
+- encode back to inbound protocol
 
 ### Core Components
-- **API Layer**: Provides RESTful API endpoints compatible with OpenAI
-- **Routing Layer**: Maps the requested config name to the configured upstream model
-- **Credential Manager**: Stores API credentials inside model configs
-- **Request/Response Handler**: Processes and transforms requests and responses
-- **Logger**: Records all requests and responses
+- **API Layer**: `handlers/chat_handler.go` exposes the three public inference protocols
+- **Protocol Adapter Layer**: `protocol/` contains request codec, non-stream response codec, and stream codec/state
+- **Dispatch Layer**: `handlers/protocol_handler.go` resolves passthrough vs transform and executes upstream calls
+- **Capability Guard**: `handlers/protocol_capabilities.go` validates `tools`, `stream`, `reasoning`, `json_schema`, `vision`, `parallel_tool_calls`
+- **Routing Layer**: backend selection, retry, and concurrency control
+- **Logger**: async request/response logging
 
 ## Technology Stack
 - **Backend**: Go
@@ -61,9 +74,12 @@ curl http://localhost:8090/
 ```
 
 ## API Documentation
-### OpenAI Compatible Endpoints
-- `POST /chat/completions`: Chat completion API compatible with OpenAI
-- `POST /v1/chat/completions`: Chat completion API compatible with OpenAI
+### Inference Endpoints
+- `POST /chat/completions`
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /responses`
+- `POST /v1/messages`
 
 ### Management Endpoints
 - `GET /api/model-configs`: List model configs
@@ -85,6 +101,8 @@ Create a model config with the following fields:
 - **Model Name**: The actual upstream model name
 - **API Base URL**: The upstream OpenAI-compatible base URL
 - **API Key**: The upstream credential
+- **Upstream Type**: One of `openai_chat`, `openai_responses`, `anthropic_messages`
+- **Capability Flags**: `supports_tools`, `supports_stream`, `supports_reasoning`, `supports_json_schema`, `supports_vision`, `supports_parallel_tool_calls`
 - **Priority / Max Tokens / Max Concurrency / Temperature / Description / Enabled**: Optional runtime settings. Lower `priority` is preferred first. `max_concurrency=0` means no limit.
 
 ## License

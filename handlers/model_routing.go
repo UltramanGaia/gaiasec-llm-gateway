@@ -104,17 +104,19 @@ func buildProviderChatURL(apiBaseURL string) string {
 	return providerURL + "chat/completions"
 }
 
-func buildProviderRequestBody(requestBody map[string]json.RawMessage, config models.ModelConfig) ([]byte, error) {
-	bodyCopy := make(map[string]json.RawMessage, len(requestBody)+1)
-	for key, value := range requestBody {
-		bodyCopy[key] = value
+func buildProviderResponsesURL(apiBaseURL string) string {
+	providerURL := strings.TrimSpace(apiBaseURL)
+	if !strings.HasSuffix(providerURL, "/") {
+		providerURL += "/"
 	}
-	modelJSON, err := json.Marshal(config.ModelName)
+	return providerURL + "responses"
+}
+
+func buildProviderRequestBody(requestBody map[string]json.RawMessage, config models.ModelConfig) ([]byte, error) {
+	bodyCopy, err := buildRequestBodyWithModel(requestBody, config.ModelName)
 	if err != nil {
 		return nil, err
 	}
-	bodyCopy["model"] = modelJSON
-
 	if reasoningRaw, ok := requestBody["reasoning"]; ok && len(reasoningRaw) > 0 {
 		var reasoningCopy map[string]json.RawMessage
 		if err := json.Unmarshal(reasoningRaw, &reasoningCopy); err == nil {
@@ -134,6 +136,19 @@ func buildProviderRequestBody(requestBody map[string]json.RawMessage, config mod
 	}
 
 	return json.Marshal(bodyCopy)
+}
+
+func buildRequestBodyWithModel(requestBody map[string]json.RawMessage, modelName string) (map[string]json.RawMessage, error) {
+	bodyCopy := make(map[string]json.RawMessage, len(requestBody)+1)
+	for key, value := range requestBody {
+		bodyCopy[key] = value
+	}
+	modelJSON, err := json.Marshal(modelName)
+	if err != nil {
+		return nil, err
+	}
+	bodyCopy["model"] = modelJSON
+	return bodyCopy, nil
 }
 
 func defaultRandomRouteOffset(count int) int {

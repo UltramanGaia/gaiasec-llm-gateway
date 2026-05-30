@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"llm-gateway/models"
+	"llm-gateway/protocol"
 )
 
 func mustRawMessageMap(t *testing.T, payload interface{}) map[string]json.RawMessage {
@@ -251,7 +252,7 @@ func TestDispatchProviderRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
 	}
 }
 
-func TestDispatchAnthropicRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
+func TestDispatchProtocolRequestRetriesBadGatewayOnSameAnthropicBackend(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	originalMaxRetries := providerBadGatewayMaxRetries
 	originalRetryDelay := providerBadGatewayRetryDelay
@@ -282,17 +283,23 @@ func TestDispatchAnthropicRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
 
 	handler := &ChatHandler{}
 	config := models.ModelConfig{
-		ID:         1,
-		Name:       "claude-retry",
-		ModelName:  "backend-claude",
-		APIBaseURL: provider.URL,
-		APIKey:     "key-a",
+		ID:           1,
+		Name:         "claude-retry",
+		ModelName:    "backend-claude",
+		APIBaseURL:   provider.URL,
+		APIKey:       "key-a",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
 	}
 	body := []byte(`{"model":"claude-retry","messages":[{"role":"user","content":"hello"}]}`)
 
-	resp, selectedConfig, lease, attempts, err := handler.dispatchAnthropicRequest(context.Background(), http.Header{}, body, "claude-retry", []models.ModelConfig{config}, false)
+	var rawBody map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawBody); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	envelope := protocolRequestEnvelope{body: body, rawBody: rawBody, modelName: "claude-retry", isStream: false}
+	resp, selectedConfig, lease, attempts, err := handler.dispatchProtocolRequest(context.Background(), protocol.InboundProtocolAnthropic, http.Header{}, envelope, []models.ModelConfig{config})
 	if err != nil {
-		t.Fatalf("dispatchAnthropicRequest returned error: %v", err)
+		t.Fatalf("dispatchProtocolRequest returned error: %v", err)
 	}
 	defer resp.Body.Close()
 	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
@@ -311,7 +318,7 @@ func TestDispatchAnthropicRequestRetriesBadGatewayOnSameBackend(t *testing.T) {
 	}
 }
 
-func TestDispatchAnthropicRequestRewritesModelToBackendModel(t *testing.T) {
+func TestDispatchProtocolRequestRewritesAnthropicModelToBackendModel(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,17 +347,23 @@ func TestDispatchAnthropicRequestRewritesModelToBackendModel(t *testing.T) {
 
 	handler := &ChatHandler{}
 	config := models.ModelConfig{
-		ID:         1,
-		Name:       "max",
-		ModelName:  "backend-claude",
-		APIBaseURL: provider.URL,
-		APIKey:     "key-a",
+		ID:           1,
+		Name:         "max",
+		ModelName:    "backend-claude",
+		APIBaseURL:   provider.URL,
+		APIKey:       "key-a",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
 	}
 	body := []byte(`{"model":"max","messages":[{"role":"user","content":"hello"}]}`)
 
-	resp, _, lease, _, err := handler.dispatchAnthropicRequest(context.Background(), http.Header{}, body, "max", []models.ModelConfig{config}, false)
+	var rawBody map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawBody); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	envelope := protocolRequestEnvelope{body: body, rawBody: rawBody, modelName: "max", isStream: false}
+	resp, _, lease, _, err := handler.dispatchProtocolRequest(context.Background(), protocol.InboundProtocolAnthropic, http.Header{}, envelope, []models.ModelConfig{config})
 	if err != nil {
-		t.Fatalf("dispatchAnthropicRequest returned error: %v", err)
+		t.Fatalf("dispatchProtocolRequest returned error: %v", err)
 	}
 	defer resp.Body.Close()
 	defer lease.Finish(backendObservation{Success: true, ResponseTimeMS: 1})
