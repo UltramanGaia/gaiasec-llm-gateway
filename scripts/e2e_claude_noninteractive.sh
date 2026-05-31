@@ -18,8 +18,8 @@ if [ -f "$CLAUDE_GATEWAY_ENV" ]; then
 fi
 
 GATEWAY_URL="${GATEWAY_URL:-${ANTHROPIC_BASE_URL:-http://127.0.0.1:8090}}"
-MODEL_NAME="${MODEL_NAME:-minimax-m25}"
-ANTHROPIC_API_KEY_VALUE="${ANTHROPIC_API_KEY_VALUE:-${ANTHROPIC_API_KEY:-dummy}}"
+ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-${MODEL_NAME:-minimax-m25}}"
+ANTHROPIC_AUTH_TOKEN_VALUE="${ANTHROPIC_AUTH_TOKEN_VALUE:-${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-dummy}}}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-/tmp/claude-gateway-e2e}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-40}"
 
@@ -32,8 +32,10 @@ run_claude_json() {
 
   if timeout "${TIMEOUT_SECONDS}s" bash -lc "
     export ANTHROPIC_BASE_URL='$GATEWAY_URL'
-    export ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY_VALUE'
-    claude --bare -p --output-format json --model '$MODEL_NAME' \"$prompt\"
+    export ANTHROPIC_AUTH_TOKEN='$ANTHROPIC_AUTH_TOKEN_VALUE'
+    export ANTHROPIC_API_KEY='$ANTHROPIC_AUTH_TOKEN_VALUE'
+    export ANTHROPIC_MODEL='$ANTHROPIC_MODEL'
+    claude --bare -p --output-format json --model '$ANTHROPIC_MODEL' \"$prompt\"
   " >"$output_file"; then
     echo "ok" >"${output_file}.status"
   else

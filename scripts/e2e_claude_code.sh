@@ -13,14 +13,15 @@ if [ -f "$CLAUDE_GATEWAY_ENV" ]; then
 fi
 
 GATEWAY_URL="${GATEWAY_URL:-http://127.0.0.1:8090}"
-MODEL_NAME="${MODEL_NAME:-minimax-m25}"
-ANTHROPIC_API_KEY_VALUE="${ANTHROPIC_API_KEY_VALUE:-dummy}"
+ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-${MODEL_NAME:-minimax-m25}}"
+ANTHROPIC_AUTH_TOKEN_VALUE="${ANTHROPIC_AUTH_TOKEN_VALUE:-${ANTHROPIC_AUTH_TOKEN:-dummy}}"
 
-echo "Launching Claude Code against $GATEWAY_URL model=$MODEL_NAME"
+echo "Launching Claude Code against $GATEWAY_URL model=$ANTHROPIC_MODEL"
 echo "Recommended test prompts:"
 echo "  1. Reply with exactly: pong"
 echo "  2. Use a tool named get_weather for Hangzhou before answering"
 
 ANTHROPIC_BASE_URL="$GATEWAY_URL" \
-ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_VALUE" \
-exec claude --model "$MODEL_NAME" --verbose
+ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN_VALUE" \
+ANTHROPIC_API_KEY="$ANTHROPIC_AUTH_TOKEN_VALUE" \
+exec claude --model "$ANTHROPIC_MODEL" --verbose

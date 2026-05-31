@@ -169,11 +169,12 @@ Example:
 ```bash
 GATEWAY_URL=http://127.0.0.1:8090 \
 MODEL_NAME=minimax-m25 \
+ANTHROPIC_AUTH_TOKEN_VALUE=dummy \
 ./scripts/install_claude_env.sh
 
 CLAUDE_GATEWAY_ENV=$HOME/.config/gaiasec-llm-gateway/claude-gateway.env \
 GATEWAY_URL=http://127.0.0.1:8090 \
-MODEL_NAME=minimax-m25 \
+ANTHROPIC_MODEL=minimax-m25 \
 ./scripts/e2e_claude_code.sh
 ```
 
@@ -188,7 +189,8 @@ Use `scripts/e2e_claude_noninteractive.sh` for a repeatable real Claude CLI chec
 Example:
 ```bash
 GATEWAY_URL=http://127.0.0.1:8090 \
-MODEL_NAME=minimax-m25 \
+ANTHROPIC_MODEL=minimax-m25 \
+ANTHROPIC_AUTH_TOKEN_VALUE=dummy \
 ./scripts/e2e_claude_noninteractive.sh
 ```
 
