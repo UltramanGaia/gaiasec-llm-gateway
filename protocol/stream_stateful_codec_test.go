@@ -136,3 +136,51 @@ func TestAnthropicFramesFromChatChunk(t *testing.T) {
 		t.Fatal("expected flushed anthropic terminal frames")
 	}
 }
+
+func TestAnthropicFramesFromChatChunkStopsThinkingBeforeText(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	chunk := map[string]interface{}{
+		"id":    "chatcmpl_reasoning",
+		"model": "gpt-model",
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index": 0.0,
+				"delta": map[string]interface{}{
+					"reasoning_content": "think",
+				},
+			},
+			map[string]interface{}{
+				"index": 0.0,
+				"delta": map[string]interface{}{
+					"content": "answer",
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+
+	frames := AnthropicFramesFromChatChunk(chunk, state)
+	var sawThinkingStart, sawThinkingStop, sawTextStart, sawTextDelta bool
+	for _, frame := range frames {
+		switch frame.Event {
+		case "content_block_start":
+			if strings.Contains(frame.Data, `"type":"thinking"`) {
+				sawThinkingStart = true
+			}
+			if strings.Contains(frame.Data, `"type":"text"`) {
+				sawTextStart = true
+			}
+		case "content_block_stop":
+			if strings.Contains(frame.Data, `"index":1`) {
+				sawThinkingStop = true
+			}
+		case "content_block_delta":
+			if strings.Contains(frame.Data, `"text":"answer"`) {
+				sawTextDelta = true
+			}
+		}
+	}
+	if !sawThinkingStart || !sawThinkingStop || !sawTextStart || !sawTextDelta {
+		t.Fatalf("expected thinking->stop->text sequence, got thinkingStart=%v thinkingStop=%v textStart=%v textDelta=%v", sawThinkingStart, sawThinkingStop, sawTextStart, sawTextDelta)
+	}
+}

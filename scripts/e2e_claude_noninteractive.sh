@@ -22,8 +22,53 @@ ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-${MODEL_NAME:-minimax-m25}}"
 ANTHROPIC_AUTH_TOKEN_VALUE="${ANTHROPIC_AUTH_TOKEN_VALUE:-${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-dummy}}}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-/tmp/claude-gateway-e2e}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-40}"
+CLAUDE_SETTINGS_PATH="${CLAUDE_SETTINGS_PATH:-$HOME/.claude/settings.json}"
+CLAUDE_SETTINGS_BACKUP_PATH="${CLAUDE_SETTINGS_BACKUP_PATH:-$ARTIFACT_DIR/claude-settings.backup.json}"
+CLAUDE_SETTINGS_EXISTED=0
 
 mkdir -p "$ARTIFACT_DIR"
+
+restore_claude_settings() {
+  if [ -f "$CLAUDE_SETTINGS_BACKUP_PATH" ]; then
+    if [ "$CLAUDE_SETTINGS_EXISTED" = "1" ]; then
+      mv "$CLAUDE_SETTINGS_BACKUP_PATH" "$CLAUDE_SETTINGS_PATH"
+    else
+      rm -f "$CLAUDE_SETTINGS_PATH" "$CLAUDE_SETTINGS_BACKUP_PATH"
+    fi
+  fi
+}
+
+trap restore_claude_settings EXIT
+
+if [ -f "$CLAUDE_SETTINGS_PATH" ]; then
+  CLAUDE_SETTINGS_EXISTED=1
+  cp "$CLAUDE_SETTINGS_PATH" "$CLAUDE_SETTINGS_BACKUP_PATH"
+else
+  echo "{}" >"$CLAUDE_SETTINGS_BACKUP_PATH"
+fi
+
+python3 - "$CLAUDE_SETTINGS_BACKUP_PATH" "$CLAUDE_SETTINGS_PATH" "$GATEWAY_URL" "$ANTHROPIC_AUTH_TOKEN_VALUE" <<'PY'
+import json
+import pathlib
+import sys
+
+backup_path = pathlib.Path(sys.argv[1])
+target_path = pathlib.Path(sys.argv[2])
+gateway_url = sys.argv[3].rstrip("/")
+auth_token = sys.argv[4]
+
+payload = json.loads(backup_path.read_text(encoding="utf-8"))
+env = payload.get("env")
+if not isinstance(env, dict):
+    env = {}
+
+env["ANTHROPIC_BASE_URL"] = gateway_url
+env["ANTHROPIC_AUTH_TOKEN"] = auth_token
+payload["env"] = env
+
+target_path.parent.mkdir(parents=True, exist_ok=True)
+target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
 
 run_claude_json() {
   local output_file prompt

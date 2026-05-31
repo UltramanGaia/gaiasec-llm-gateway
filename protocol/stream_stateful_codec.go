@@ -393,27 +393,6 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 			continue
 		}
 		delta, _ := choice["delta"].(map[string]interface{})
-		if content := stringValue(delta["content"]); content != "" {
-			if !state.TextStarted {
-				frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
-					"type":  "content_block_start",
-					"index": 0,
-					"content_block": map[string]interface{}{
-						"type": "text",
-						"text": "",
-					},
-				}))
-				state.TextStarted = true
-			}
-			frames = append(frames, anthropicFrame("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": 0,
-				"delta": map[string]interface{}{
-					"type": "text_delta",
-					"text": content,
-				},
-			}))
-		}
 		if reasoning := stringValue(delta["reasoning_content"]); reasoning != "" {
 			if !state.ReasoningStarted {
 				frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
@@ -433,6 +412,34 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 				"delta": map[string]interface{}{
 					"type":     "thinking_delta",
 					"thinking": reasoning,
+				},
+			}))
+		}
+		if content := stringValue(delta["content"]); content != "" {
+			if state.ReasoningStarted {
+				frames = append(frames, anthropicFrame("content_block_stop", map[string]interface{}{
+					"type":  "content_block_stop",
+					"index": 1,
+				}))
+				state.ReasoningStarted = false
+			}
+			if !state.TextStarted {
+				frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+					"type":  "content_block_start",
+					"index": 0,
+					"content_block": map[string]interface{}{
+						"type": "text",
+						"text": "",
+					},
+				}))
+				state.TextStarted = true
+			}
+			frames = append(frames, anthropicFrame("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]interface{}{
+					"type": "text_delta",
+					"text": content,
 				},
 			}))
 		}
