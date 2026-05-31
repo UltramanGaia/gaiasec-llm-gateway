@@ -105,5 +105,116 @@ Create a model config with the following fields:
 - **Capability Flags**: `supports_tools`, `supports_stream`, `supports_reasoning`, `supports_json_schema`, `supports_vision`, `supports_parallel_tool_calls`
 - **Priority / Max Tokens / Max Concurrency / Temperature / Description / Enabled**: Optional runtime settings. Lower `priority` is preferred first. `max_concurrency=0` means no limit.
 
+## Test Scripts
+This repo now carries its own gateway-level smoke and real-client launch scripts under `scripts/`.
+
+### Gateway Smoke Test
+Use `scripts/e2e_gateway_smoke.sh` to:
+- create or update a `/api/model-configs` entry
+- run `/api/model-configs/{id}/test`
+- verify 4 real calls through the gateway:
+  - non-stream, no tools
+  - stream, no tools
+  - non-stream, with tools
+  - stream, with tools
+
+Example:
+```bash
+UPSTREAM_API_KEY=sk-... \
+GATEWAY_URL=http://127.0.0.1:8090 \
+CONFIG_NAME=minimax-m25 \
+UPSTREAM_BASE_URL=http://172.31.29.10/v1 \
+UPSTREAM_MODEL=MiniMax/MiniMax-M2.5 \
+./scripts/e2e_gateway_smoke.sh
+```
+
+### Codex Real-Client Test
+Use `scripts/e2e_codex.sh` to launch Codex against a gateway-backed profile.
+
+Example:
+```bash
+GATEWAY_URL=http://127.0.0.1:8090 \
+MODEL_NAME=minimax-m25 \
+./scripts/install_codex_profile.sh rosetta-openai
+
+CODEX_PROFILE=rosetta-openai \
+MODEL_NAME=minimax-m25 \
+./scripts/e2e_codex.sh
+```
+
+Notes:
+- `scripts/install_codex_profile.sh` writes a profile into `~/.codex/<name>.config.toml` from `templates/codex/gateway-openai-profile.config.toml`.
+- The generated profile points Codex at `GATEWAY_URL/v1` and uses the gateway's `responses` endpoint.
+- Once started, test both plain text and tool-using prompts.
+
+### Codex Non-Interactive Validation
+Use `scripts/e2e_codex_noninteractive.sh` for a repeatable real Codex check without depending on any local profile.
+
+Example:
+```bash
+GATEWAY_URL=http://127.0.0.1:8090 \
+MODEL_NAME=minimax-m25 \
+./scripts/e2e_codex_noninteractive.sh
+```
+
+This script:
+- injects a temporary Codex provider pointing at `GATEWAY_URL/v1`
+- verifies a plain-text turn returns exactly `pong`
+- verifies a tool-path turn returns a non-empty assistant message instead of protocol failure
+
+### Claude Code Real-Client Test
+Use `scripts/e2e_claude_code.sh` to launch Claude Code against the gateway's Anthropic-compatible endpoint.
+
+Example:
+```bash
+GATEWAY_URL=http://127.0.0.1:8090 \
+MODEL_NAME=minimax-m25 \
+./scripts/install_claude_env.sh
+
+CLAUDE_GATEWAY_ENV=$HOME/.config/gaiasec-llm-gateway/claude-gateway.env \
+GATEWAY_URL=http://127.0.0.1:8090 \
+MODEL_NAME=minimax-m25 \
+./scripts/e2e_claude_code.sh
+```
+
+Notes:
+- `scripts/install_claude_env.sh` writes a reusable env file under `~/.config/gaiasec-llm-gateway/`.
+- This exercises `POST /v1/messages` inbound behavior through a real Anthropic-style client.
+- Keep the gateway smoke test as the protocol baseline; use Codex and Claude Code to catch real-client compatibility regressions.
+
+### Claude Non-Interactive Validation
+Use `scripts/e2e_claude_noninteractive.sh` for a repeatable real Claude CLI check.
+
+Example:
+```bash
+GATEWAY_URL=http://127.0.0.1:8090 \
+MODEL_NAME=minimax-m25 \
+./scripts/e2e_claude_noninteractive.sh
+```
+
+This script:
+- runs Claude CLI in `--bare -p` mode against the gateway
+- validates a plain-text prompt
+- validates a tool-path prompt
+- distinguishes `passed`, `unexpected_output`, `empty_output`, and `timeout_or_error`
+
+### Unified Setup
+Use `scripts/e2e_all.sh` to run the gateway smoke test, install the Codex profile, install the Claude env file, and optionally launch one client.
+
+Example:
+```bash
+UPSTREAM_API_KEY=sk-... \
+GATEWAY_URL=http://127.0.0.1:8090 \
+CONFIG_NAME=minimax-m25 \
+UPSTREAM_BASE_URL=http://172.31.29.10/v1 \
+UPSTREAM_MODEL=MiniMax/MiniMax-M2.5 \
+CLIENT=none \
+./scripts/e2e_all.sh
+```
+
+Optional:
+- `CLIENT=codex` launches Codex after setup
+- `CLIENT=claude` launches Claude Code after setup
+
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.

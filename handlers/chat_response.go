@@ -382,13 +382,30 @@ func (h *ChatHandler) handleNonStreamResponse(w http.ResponseWriter, resp *http.
 		return nil
 	}
 
-	respBodyDecode, err := gzipDecode(respBody)
-	if err != nil {
+	respBodyDecode, decodeErr := gzipDecode(respBody)
+	if decodeErr != nil {
+		respBodyDecode = respBody
 		reqLog.Response = string(respBody)
 		log.Debug("Provider response not gzip encoded")
 	} else {
 		reqLog.Response = string(respBodyDecode)
 		log.Debug("Provider response gzip decoded")
+	}
+
+	if ir, err := protocol.DecodeOpenAIChatResponse(respBodyDecode); err == nil {
+		if normalizedBody, err := protocol.EncodeOpenAIChatResponse(ir, ir.Model); err == nil {
+			_, _ = w.Write(normalizedBody)
+			reqLog.Response = string(normalizedBody)
+			if reqLog.FirstTokenLatency == 0 {
+				reqLog.FirstTokenLatency = reqLog.ResponseTime
+			}
+
+			log.WithFields(log.Fields{
+				"response_length": len(normalizedBody),
+				"backend_model":   config.ModelName,
+			}).Info("Non-stream response normalized")
+			return nil
+		}
 	}
 
 	w.Write(respBody)
@@ -770,8 +787,9 @@ func (h *ChatHandler) handleResponsesFromAnthropicStreamResponse(w http.Response
 			}
 		}
 		if done {
-			h.writeResponsesStreamDone(w, responseID, model, seqNum)
-			outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesDoneEvent(responseID, model, seqNum+1)))
+			h.writeResponsesStreamDone(w, responseID, model, "", seqNum)
+			outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesDoneEvent(responseID, model, "", seqNum+1)))
+			outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesTerminalDoneEvent(seqNum + 2)))
 			outStream.WriteString("data: [DONE]\n\n")
 			break
 		}
@@ -958,6 +976,7 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 	var seqNum int64
 	var responseID string
 	var model string
+	state := protocol.NewChatToResponsesStreamState()
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -988,7 +1007,7 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 			dataStr := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 			if dataStr == "" || dataStr == "[DONE]" {
 				if dataStr == "[DONE]" {
-					h.writeResponsesStreamDone(w, responseID, model, seqNum)
+					h.writeResponsesStreamDone(w, responseID, model, state.MessageText[0], seqNum)
 				}
 				continue
 			}
@@ -1013,7 +1032,7 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 			if choices, ok := chatChunk["choices"].([]interface{}); ok && len(choices) > 0 {
 				chunkCount++
 				metrics.Record(time.Now())
-				responsesEvents := protocol.ConvertChatChunkToResponsesEvents(chatChunk, seqNum)
+				responsesEvents := protocol.ConvertChatChunkToResponsesEventsStateful(chatChunk, seqNum, state)
 				for _, event := range responsesEvents {
 					eventLine := protocol.FormatResponsesStreamEvent(event)
 					w.Write([]byte(eventLine))
@@ -1022,7 +1041,7 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 					}
 				}
 			} else if usage, ok := chatChunk["usage"].(map[string]interface{}); ok && usage != nil {
-				h.writeResponsesStreamCompleted(w, responseID, model, usage, seqNum)
+				h.writeResponsesStreamCompleted(w, responseID, model, usage, state.MessageText[0], seqNum)
 			}
 		} else if trimmed != "" {
 			w.Write([]byte(line))
@@ -1049,7 +1068,7 @@ func convertChatStreamChunkToResponsesEvents(chatChunk map[string]interface{}, s
 	return protocol.ConvertChatChunkToResponsesEvents(chatChunk, seqNum)
 }
 
-func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, model string, usage map[string]interface{}, seqNum int64) {
+func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, model string, usage map[string]interface{}, outputText string, seqNum int64) {
 	seqNum++
 	inputTokens := 0
 	outputTokens := 0
@@ -1063,17 +1082,18 @@ func (h *ChatHandler) writeResponsesStreamCompleted(w http.ResponseWriter, id, m
 	event := protocol.BuildResponsesCompletedEvent(id, model, map[string]interface{}{
 		"prompt_tokens":     inputTokens,
 		"completion_tokens": outputTokens,
-	}, seqNum)
+	}, outputText, seqNum)
 	w.Write([]byte(protocol.FormatResponsesStreamEvent(event)))
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
-func (h *ChatHandler) writeResponsesStreamDone(w http.ResponseWriter, id, model string, seqNum int64) {
+func (h *ChatHandler) writeResponsesStreamDone(w http.ResponseWriter, id, model, outputText string, seqNum int64) {
 	seqNum++
-	event := protocol.BuildResponsesDoneEvent(id, model, seqNum)
+	event := protocol.BuildResponsesDoneEvent(id, model, outputText, seqNum)
 	w.Write([]byte(protocol.FormatResponsesStreamEvent(event)))
+	w.Write([]byte(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesTerminalDoneEvent(seqNum + 1))))
 	w.Write([]byte("data: [DONE]\n\n"))
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()

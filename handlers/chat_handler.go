@@ -119,55 +119,7 @@ func (h *ChatHandler) sendResponsesRequest(ctx context.Context, headers http.Hea
 	if err != nil {
 		return nil, err
 	}
-
-	providerURL := buildProviderChatURL(config.APIBaseURL)
-
-	loggerWithTrace(ctx).WithFields(log.Fields{
-		"url":         providerURL,
-		"model":       config.ModelName,
-		"is_stream":   isStream,
-		"body_length": len(updatedBody),
-	}).Info("Dispatching Responses→Chat provider request")
-
-	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(updatedBody))
-	if err != nil {
-		loggerWithTrace(ctx).WithError(err).WithField("url", providerURL).Error("Responses request creation failed")
-		return nil, err
-	}
-
-	if headers != nil {
-		req.Header = headers.Clone()
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-	if headers != nil {
-		if userAgent := strings.TrimSpace(headers.Get("User-Agent")); userAgent != "" {
-			req.Header.Set("User-Agent", userAgent)
-		}
-	}
-
-	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
-
-	var client *http.Client
-	if isStream {
-		client = GetStreamHTTPClient()
-	} else {
-		client = GetHTTPClient()
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		loggerWithTrace(ctx).WithError(err).WithField("url", providerURL).Error("Responses request failed")
-		return nil, err
-	}
-
-	loggerWithTrace(ctx).WithFields(log.Fields{
-		"url":         providerURL,
-		"status_code": resp.StatusCode,
-	}).Info("Responses→Chat response received")
-
-	return resp, nil
+	return h.sendOpenAIChatUpstreamRequest(ctx, headers, updatedBody, config, isStream)
 }
 
 func (h *ChatHandler) passthroughStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {

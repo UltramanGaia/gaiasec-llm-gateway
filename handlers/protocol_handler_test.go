@@ -59,6 +59,188 @@ func TestResponsesHandlerPassthroughsToResponsesUpstream(t *testing.T) {
 	}
 }
 
+func TestChatHandlerPassthroughsToChatUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	var gotPath string
+	var gotAuth string
+	var gotModel string
+	var gotMessages []map[string]any
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		gotModel, _ = payload["model"].(string)
+		if messages, ok := payload["messages"].([]any); ok {
+			for _, item := range messages {
+				if msg, ok := item.(map[string]any); ok {
+					gotMessages = append(gotMessages, msg)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_123","object":"chat.completion","model":"backend-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "auto-chat-passthrough",
+		ModelName:    "backend-chat",
+		APIBaseURL:   provider.URL,
+		APIKey:       "chat-key",
+		UpstreamType: models.UpstreamTypeOpenAIChat,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"auto-chat-passthrough","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/chat/completions" {
+		t.Fatalf("expected provider /chat/completions path, got %q", gotPath)
+	}
+	if gotAuth != "Bearer chat-key" {
+		t.Fatalf("expected bearer auth header, got %q", gotAuth)
+	}
+	if gotModel != "backend-chat" {
+		t.Fatalf("expected rewritten backend model, got %q", gotModel)
+	}
+	if len(gotMessages) != 1 || gotMessages[0]["role"] != "user" || gotMessages[0]["content"] != "hello" {
+		t.Fatalf("expected passthrough chat message body, got %+v", gotMessages)
+	}
+}
+
+func TestChatHandlerPassthroughNormalizesThinkTaggedContent(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl_think","object":"chat.completion","model":"backend-chat","choices":[{"index":0,"message":{"role":"assistant","content":"<think>private reasoning</think>\n\npong"},"finish_reason":"stop"}]}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-think-normalize",
+		ModelName:    "backend-chat",
+		APIBaseURL:   provider.URL,
+		APIKey:       "chat-key",
+		UpstreamType: models.UpstreamTypeOpenAIChat,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-think-normalize","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode normalized chat response: %v", err)
+	}
+	message := payload["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if message["content"] != "pong" {
+		t.Fatalf("expected think tags removed from content, got %+v", message["content"])
+	}
+	if message["reasoning_content"] != "private reasoning" {
+		t.Fatalf("expected reasoning_content extracted from think tags, got %+v", message["reasoning_content"])
+	}
+}
+
+func TestChatHandlerAggregatesToolStreamForNonStreamChatUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	var gotStream bool
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		gotStream, _ = payload["stream"].(bool)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		stream := strings.Join([]string{
+			`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"backend-chat","choices":[{"index":0,"delta":{"content":"","role":"assistant"}}]}`,
+			"",
+			`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"backend-chat","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Hang"}}]}}]}`,
+			"",
+			`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"backend-chat","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"zhou\"}"}}]}}]}`,
+			"",
+			`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"backend-chat","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-tool-aggregate",
+		ModelName:    "backend-chat",
+		APIBaseURL:   provider.URL,
+		APIKey:       "chat-key",
+		UpstreamType: models.UpstreamTypeOpenAIChat,
+		SupportsTools: true,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-tool-aggregate","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"required","stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !gotStream {
+		t.Fatalf("expected gateway to force upstream stream=true for tool aggregation")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode aggregated chat response: %v", err)
+	}
+	choice := payload["choices"].([]any)[0].(map[string]any)
+	if choice["finish_reason"] != "tool_calls" {
+		t.Fatalf("expected finish_reason tool_calls, got %+v", choice["finish_reason"])
+	}
+	message := choice["message"].(map[string]any)
+	toolCalls := message["tool_calls"].([]any)
+	fn := toolCalls[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "get_weather" || fn["arguments"] != "{\"city\":\"Hangzhou\"}" {
+		t.Fatalf("expected aggregated tool call payload, got %+v", toolCalls[0])
+	}
+}
+
 func TestResponsesHandlerTransformsToChatForChatUpstream(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -484,6 +666,75 @@ func TestAnthropicHandlerTransformsToChatUpstream(t *testing.T) {
 	first := content[0].(map[string]any)
 	if first["type"] != "text" || first["text"] != "chat says hi" {
 		t.Fatalf("expected chat response to convert to anthropic message, got %+v", payload)
+	}
+}
+
+func TestAnthropicHandlerPassthroughsToAnthropicUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	var gotPath string
+	var gotAPIKey string
+	var gotModel string
+	var gotSystem string
+	var gotMessages []map[string]any
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		gotModel, _ = payload["model"].(string)
+		gotSystem, _ = payload["system"].(string)
+		if messages, ok := payload["messages"].([]any); ok {
+			for _, item := range messages {
+				if msg, ok := item.(map[string]any); ok {
+					gotMessages = append(gotMessages, msg)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_123","type":"message","role":"assistant","model":"backend-anthropic","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2}}`))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "auto-anthropic-passthrough",
+		ModelName:    "backend-anthropic",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"auto-anthropic-passthrough","system":"sys","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if gotPath != "/messages" {
+		t.Fatalf("expected provider /messages path, got %q", gotPath)
+	}
+	if gotAPIKey != "anthropic-key" {
+		t.Fatalf("expected x-api-key header, got %q", gotAPIKey)
+	}
+	if gotModel != "backend-anthropic" {
+		t.Fatalf("expected rewritten backend model, got %q", gotModel)
+	}
+	if gotSystem != "sys" {
+		t.Fatalf("expected passthrough system field, got %q", gotSystem)
+	}
+	if len(gotMessages) != 1 || gotMessages[0]["role"] != "user" {
+		t.Fatalf("expected passthrough anthropic user message, got %+v", gotMessages)
 	}
 }
 

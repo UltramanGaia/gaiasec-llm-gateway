@@ -59,17 +59,59 @@ func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Head
 		loggerWithTrace(ctx).WithError(err).Error("Provider request build failed")
 		return nil, err
 	}
+	return h.sendOpenAIChatUpstreamRequest(ctx, headers, updatedBody, config, isStream)
+}
 
+func (h *ChatHandler) sendOpenAIChatUpstreamRequest(ctx context.Context, headers http.Header, requestBody []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
+	if shouldAggregateOpenAIChatToolCallResponse(requestBody, isStream) {
+		resp, err := h.sendOpenAIChatUpstreamRequestAggregated(ctx, headers, requestBody, config)
+		if err == nil {
+			return resp, nil
+		}
+		loggerWithTrace(ctx).WithError(err).WithField("model", config.ModelName).Warn("OpenAI chat tool-call aggregation failed, falling back to standard non-stream request")
+	}
+	return h.executeOpenAIChatUpstreamRequest(ctx, headers, requestBody, config, isStream)
+}
+
+func (h *ChatHandler) sendOpenAIChatUpstreamRequestAggregated(ctx context.Context, headers http.Header, requestBody []byte, config models.ModelConfig) (*http.Response, error) {
+	forcedBody, err := forceStreamRequestBody(requestBody)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := h.executeOpenAIChatUpstreamRequest(ctx, headers, forcedBody, config, true)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, nil
+	}
+
+	defer resp.Body.Close()
+	rawStream, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	streamLog, err := buildOpenAIStreamLogResponse(string(rawStream))
+	if err != nil {
+		return nil, err
+	}
+
+	return synthesizeJSONResponse(resp, []byte(streamLog.ResponseJSON)), nil
+}
+
+func (h *ChatHandler) executeOpenAIChatUpstreamRequest(ctx context.Context, headers http.Header, requestBody []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {
 	providerURL := buildProviderChatURL(config.APIBaseURL)
 
 	loggerWithTrace(ctx).WithFields(log.Fields{
 		"url":         providerURL,
 		"model":       config.ModelName,
 		"is_stream":   isStream,
-		"body_length": len(updatedBody),
+		"body_length": len(requestBody),
 	}).Info("Dispatching provider request")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(updatedBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", providerURL, bytes.NewReader(requestBody))
 	if err != nil {
 		loggerWithTrace(ctx).WithError(err).WithField("url", providerURL).Error("Provider request creation failed")
 		return nil, err
@@ -91,11 +133,9 @@ func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Head
 	}
 
 	startTime := time.Now()
-	var client *http.Client
+	client := GetHTTPClient()
 	if isStream {
 		client = GetStreamHTTPClient()
-	} else {
-		client = GetHTTPClient()
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -111,4 +151,49 @@ func (h *ChatHandler) sendProviderRequest(ctx context.Context, headers http.Head
 	}).Info("Provider response received")
 
 	return resp, nil
+}
+
+func shouldAggregateOpenAIChatToolCallResponse(requestBody []byte, isStream bool) bool {
+	if isStream {
+		return false
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(requestBody, &payload); err != nil {
+		return false
+	}
+
+	toolsRaw, ok := payload["tools"]
+	if !ok || len(toolsRaw) == 0 || string(toolsRaw) == "null" {
+		return false
+	}
+
+	var tools []json.RawMessage
+	return json.Unmarshal(toolsRaw, &tools) == nil && len(tools) > 0
+}
+
+func forceStreamRequestBody(requestBody []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(requestBody, &payload); err != nil {
+		return nil, err
+	}
+
+	streamRaw, err := json.Marshal(true)
+	if err != nil {
+		return nil, err
+	}
+	payload["stream"] = streamRaw
+	return json.Marshal(payload)
+}
+
+func synthesizeJSONResponse(resp *http.Response, body []byte) *http.Response {
+	synth := new(http.Response)
+	*synth = *resp
+	synth.Header = resp.Header.Clone()
+	synth.Header.Set("Content-Type", "application/json")
+	synth.Header.Del("Content-Encoding")
+	synth.Header.Del("Transfer-Encoding")
+	synth.ContentLength = int64(len(body))
+	synth.Body = io.NopCloser(bytes.NewReader(body))
+	return synth
 }

@@ -33,10 +33,10 @@ func TestStreamFixtureOpenAIChatToResponses(t *testing.T) {
 	}
 
 	events := ConvertChatChunkToResponsesEvents(chunk, 11)
-	if len(events) < 4 {
+	if len(events) < 8 {
 		t.Fatalf("expected responses events from chat fixture, got %d", len(events))
 	}
-	if events[0].Event != "response.output_item.added" || events[1].Event != "response.output_text.delta" {
+	if events[0].Event != "response.created" || events[1].Event != "response.in_progress" || events[2].Event != "response.output_item.added" || events[3].Event != "response.content_part.added" || events[4].Event != "response.output_text.delta" {
 		t.Fatalf("unexpected event order from chat fixture: %+v", events)
 	}
 }

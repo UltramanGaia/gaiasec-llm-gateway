@@ -142,6 +142,10 @@ func (h *ChatHandler) handleProtocolRequest(w http.ResponseWriter, r *http.Reque
 			w.Header().Add(key, value)
 		}
 	}
+	if responseBodyWillBeRewritten(inbound, selectedConfig.UpstreamType, protocol.ResolveDispatchMode(inbound, selectedConfig.UpstreamType), envelope.isStream) {
+		w.Header().Del("Content-Length")
+		w.Header().Del("Content-Encoding")
+	}
 
 	w.WriteHeader(resp.StatusCode)
 	if err := h.writeProtocolResponse(w, resp, &reqLog, selectedConfig, inbound, protocol.ResolveDispatchMode(inbound, selectedConfig.UpstreamType), envelope.isStream); err != nil {
@@ -154,6 +158,23 @@ func (h *ChatHandler) handleProtocolRequest(w http.ResponseWriter, r *http.Reque
 		shouldLog = true
 	}
 	requestSucceeded = true
+}
+
+func responseBodyWillBeRewritten(inbound protocol.InboundProtocol, upstream models.UpstreamType, mode protocol.DispatchMode, isStream bool) bool {
+	if isStream {
+		return false
+	}
+
+	switch inbound {
+	case protocol.InboundProtocolChat:
+		return true
+	case protocol.InboundProtocolResponses:
+		return mode != protocol.DispatchPassthrough
+	case protocol.InboundProtocolAnthropic:
+		return upstream != models.UpstreamTypeAnthropicMessages
+	default:
+		return false
+	}
 }
 
 func protocolEndpointName(inbound protocol.InboundProtocol) string {
@@ -510,26 +531,7 @@ func (h *ChatHandler) sendAnthropicToChatRequest(ctx context.Context, headers ht
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildProviderChatURL(config.APIBaseURL), bytes.NewReader(updatedBody))
-	if err != nil {
-		return nil, err
-	}
-	if headers != nil {
-		req.Header = headers.Clone()
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-	if headers != nil && strings.TrimSpace(headers.Get("User-Agent")) != "" {
-		req.Header.Set("User-Agent", headers.Get("User-Agent"))
-	}
-	if isStream {
-		req.Header.Set("Accept", "text/event-stream")
-	}
-	client := GetHTTPClient()
-	if isStream {
-		client = GetStreamHTTPClient()
-	}
-	return client.Do(req)
+	return h.sendOpenAIChatUpstreamRequest(ctx, headers, updatedBody, config, isStream)
 }
 
 func (h *ChatHandler) sendResponsesToAnthropicRequest(ctx context.Context, headers http.Header, body []byte, config models.ModelConfig, isStream bool) (*http.Response, error) {

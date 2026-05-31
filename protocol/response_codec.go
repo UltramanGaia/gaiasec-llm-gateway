@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type openAIChatResponse struct {
 	ID      string          `json:"id"`
@@ -143,8 +146,12 @@ func decodeOpenAIChatChoices(raw json.RawMessage) ([]IRMessage, string) {
 			continue
 		}
 		msg := IRMessage{Role: firstNonEmpty(stringValue(message["role"]), "assistant")}
-		msg.Content = append(msg.Content, decodeGenericContent(message["content"])...)
-		if reasoning := stringValue(message["reasoning_content"]); reasoning != "" {
+		msg.Content = append(msg.Content, decodeOpenAIChatMessageContent(message["content"])...)
+		reasoning := firstNonEmpty(
+			stringValue(message["reasoning_content"]),
+			extractThinkTaggedReasoning(stringValue(message["content"])),
+		)
+		if reasoning != "" {
 			msg.Content = append(msg.Content, IRPart{Type: "reasoning", Text: reasoning})
 		}
 		if toolCalls, ok := message["tool_calls"].([]interface{}); ok {
@@ -170,6 +177,57 @@ func decodeOpenAIChatChoices(raw json.RawMessage) ([]IRMessage, string) {
 		}
 	}
 	return result, finishReason
+}
+
+func decodeOpenAIChatMessageContent(content interface{}) []IRPart {
+	if rawText, ok := content.(string); ok {
+		text, _ := stripThinkTaggedText(rawText)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+		return []IRPart{{Type: "text", Text: text}}
+	}
+	return decodeGenericContent(content)
+}
+
+func extractThinkTaggedReasoning(content string) string {
+	_, reasoning := stripThinkTaggedText(content)
+	return reasoning
+}
+
+func stripThinkTaggedText(content string) (string, string) {
+	if !strings.Contains(content, "<think>") || !strings.Contains(content, "</think>") {
+		return content, ""
+	}
+
+	var reasoningParts []string
+	var output strings.Builder
+	rest := content
+
+	for {
+		start := strings.Index(rest, "<think>")
+		if start < 0 {
+			output.WriteString(rest)
+			break
+		}
+		output.WriteString(rest[:start])
+		rest = rest[start+len("<think>"):]
+
+		end := strings.Index(rest, "</think>")
+		if end < 0 {
+			output.WriteString("<think>")
+			output.WriteString(rest)
+			break
+		}
+
+		reasoning := strings.TrimSpace(rest[:end])
+		if reasoning != "" {
+			reasoningParts = append(reasoningParts, reasoning)
+		}
+		rest = rest[end+len("</think>"):]
+	}
+
+	return strings.TrimSpace(output.String()), strings.Join(reasoningParts, "\n\n")
 }
 
 func encodeOpenAIChatChoices(ir IRResponse) []map[string]interface{} {

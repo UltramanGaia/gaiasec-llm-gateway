@@ -86,6 +86,68 @@ func TestChatRequestToolChoiceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChatRequestDropsUnsupportedBuiltInTools(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-tools-filter",
+		"messages":[{"role":"user","content":"hello"}],
+		"tools":[
+			{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}},
+			{"type":"namespace","name":"shell"},
+			{"type":"web_search"}
+		],
+		"tool_choice":"auto",
+		"parallel_tool_calls":true
+	}`)
+
+	ir, err := DecodeOpenAIChatRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
+	}
+	if len(ir.Tools) != 1 || ir.Tools[0].Name != "lookup" {
+		t.Fatalf("expected only function tool to survive filtering, got %+v", ir.Tools)
+	}
+
+	encoded, err := EncodeOpenAIChatRequest(ir, "backend-tools")
+	if err != nil {
+		t.Fatalf("EncodeOpenAIChatRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	tools := payload["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("expected only one encoded tool, got %+v", tools)
+	}
+}
+
+func TestChatRequestClearsToolChoiceWhenOnlyUnsupportedToolsRemain(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-tools-filter-empty",
+		"messages":[{"role":"user","content":"hello"}],
+		"tools":[
+			{"type":"namespace","name":"shell"},
+			{"type":"web_search"}
+		],
+		"tool_choice":"required",
+		"parallel_tool_calls":true
+	}`)
+
+	ir, err := DecodeOpenAIChatRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
+	}
+	if len(ir.Tools) != 0 {
+		t.Fatalf("expected unsupported tools to be dropped, got %+v", ir.Tools)
+	}
+	if len(ir.ToolChoice) != 0 {
+		t.Fatalf("expected tool_choice to be cleared when no tools remain, got %s", string(ir.ToolChoice))
+	}
+	if _, ok := ir.ProviderExtensions["parallel_tool_calls"]; ok {
+		t.Fatalf("expected parallel_tool_calls to be cleared when no tools remain")
+	}
+}
+
 func TestChatRequestVisionRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-vision",
@@ -219,6 +281,41 @@ func TestResponsesRequestToolChoiceRoundTrip(t *testing.T) {
 	toolChoice := payload["tool_choice"].(map[string]interface{})
 	if toolChoice["name"] != "lookup" {
 		t.Fatalf("expected responses tool_choice lookup, got %+v", toolChoice)
+	}
+}
+
+func TestResponsesRequestDropsUnsupportedBuiltInTools(t *testing.T) {
+	body := []byte(`{
+		"model":"resp-tools-filter",
+		"input":"hello",
+		"tools":[
+			{"type":"function","name":"lookup","parameters":{"type":"object"}},
+			{"type":"namespace","name":"shell"},
+			{"type":"web_search"}
+		],
+		"tool_choice":"auto",
+		"parallel_tool_calls":true
+	}`)
+
+	ir, err := DecodeResponsesRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeResponsesRequest error: %v", err)
+	}
+	if len(ir.Tools) != 1 || ir.Tools[0].Name != "lookup" {
+		t.Fatalf("expected only function tool to survive filtering, got %+v", ir.Tools)
+	}
+
+	encoded, err := EncodeResponsesRequest(ir, "backend-resp-tools")
+	if err != nil {
+		t.Fatalf("EncodeResponsesRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	tools := payload["tools"].([]interface{})
+	if len(tools) != 1 {
+		t.Fatalf("expected only one encoded tool, got %+v", tools)
 	}
 }
 

@@ -1,0 +1,12 @@
+model_provider = "GatewayOpenAI"
+model = "__MODEL_NAME__"
+review_model = "__MODEL_NAME__"
+model_reasoning_effort = "medium"
+disable_response_storage = true
+network_access = "enabled"
+
+[model_providers.GatewayOpenAI]
+name = "GatewayOpenAI"
+base_url = "__GATEWAY_BASE_URL__/v1"
+wire_api = "responses"
+requires_openai_auth = false

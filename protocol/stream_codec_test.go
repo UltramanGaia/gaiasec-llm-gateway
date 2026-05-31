@@ -45,14 +45,20 @@ func TestConvertChatChunkToResponsesEvents(t *testing.T) {
 	}
 
 	events := ConvertChatChunkToResponsesEvents(chunk, 7)
-	if len(events) < 4 {
+	if len(events) < 7 {
 		t.Fatalf("expected multiple responses events, got %d", len(events))
 	}
 	if events[0].Event != "response.output_item.added" {
 		t.Fatalf("unexpected first event %q", events[0].Event)
 	}
-	if events[1].Event != "response.output_text.delta" {
+	if events[1].Event != "response.content_part.added" {
 		t.Fatalf("unexpected second event %q", events[1].Event)
+	}
+	if events[2].Event != "response.output_text.delta" {
+		t.Fatalf("unexpected third event %q", events[2].Event)
+	}
+	if events[3].Event != "response.output_item.added" {
+		t.Fatalf("unexpected fourth event %q", events[3].Event)
 	}
 }
 
@@ -60,8 +66,8 @@ func TestResponsesCompletedAndDoneEventFormatting(t *testing.T) {
 	completed := BuildResponsesCompletedEvent("resp_1", "model-a", map[string]interface{}{
 		"prompt_tokens":     3,
 		"completion_tokens": 2,
-	}, 9)
-	done := BuildResponsesDoneEvent("resp_1", "model-a", 10)
+	}, "hello", 9)
+	done := BuildResponsesDoneEvent("resp_1", "model-a", "hello", 10)
 
 	completedText := FormatResponsesStreamEvent(completed)
 	doneText := FormatResponsesStreamEvent(done)

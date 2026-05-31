@@ -77,6 +77,7 @@ func DecodeOpenAIChatRequest(body []byte) (IRRequest, error) {
 	if req.ParallelToolCalls != nil {
 		ir.ProviderExtensions["parallel_tool_calls"] = *req.ParallelToolCalls
 	}
+	normalizeIRToolConfig(&ir, rawHasUsableArray(req.Tools))
 	return ir, nil
 }
 
@@ -134,6 +135,7 @@ func DecodeResponsesRequest(body []byte) (IRRequest, error) {
 	if req.ParallelToolCalls != nil {
 		ir.ProviderExtensions["parallel_tool_calls"] = *req.ParallelToolCalls
 	}
+	normalizeIRToolConfig(&ir, rawHasUsableArray(req.Tools))
 	return ir, nil
 }
 
@@ -310,7 +312,13 @@ func decodeOpenAIChatTools(raw json.RawMessage) []IRTool {
 	}
 	result := make([]IRTool, 0, len(tools))
 	for _, tool := range tools {
+		if firstNonEmpty(stringValue(tool["type"]), "function") != "function" {
+			continue
+		}
 		fn, _ := tool["function"].(map[string]interface{})
+		if fn == nil || strings.TrimSpace(stringValue(fn["name"])) == "" {
+			continue
+		}
 		parameters, _ := json.Marshal(fn["parameters"])
 		result = append(result, IRTool{
 			Type:        firstNonEmpty(stringValue(tool["type"]), "function"),
@@ -320,6 +328,24 @@ func decodeOpenAIChatTools(raw json.RawMessage) []IRTool {
 		})
 	}
 	return result
+}
+
+func normalizeIRToolConfig(ir *IRRequest, hadTools bool) {
+	if ir == nil {
+		return
+	}
+	if !hadTools || len(ir.Tools) > 0 {
+		return
+	}
+	ir.ToolChoice = nil
+	if ir.ProviderExtensions != nil {
+		delete(ir.ProviderExtensions, "parallel_tool_calls")
+	}
+}
+
+func rawHasUsableArray(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null" && trimmed != "[]"
 }
 
 func encodeOpenAIChatTools(tools []IRTool) []map[string]interface{} {
@@ -439,11 +465,58 @@ func encodeResponsesInput(messages []IRMessage) []map[string]interface{} {
 }
 
 func decodeResponsesTools(raw json.RawMessage) []IRTool {
-	return decodeOpenAIChatTools(raw)
+	var tools []map[string]interface{}
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return nil
+	}
+	result := make([]IRTool, 0, len(tools))
+	for _, tool := range tools {
+		if firstNonEmpty(stringValue(tool["type"]), "function") != "function" {
+			continue
+		}
+		name := stringValue(tool["name"])
+		if strings.TrimSpace(name) == "" {
+			if fn, ok := tool["function"].(map[string]interface{}); ok {
+				name = stringValue(fn["name"])
+			}
+		}
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		description := stringValue(tool["description"])
+		if description == "" {
+			if fn, ok := tool["function"].(map[string]interface{}); ok {
+				description = stringValue(fn["description"])
+			}
+		}
+		var paramsSource interface{} = tool["parameters"]
+		if paramsSource == nil {
+			if fn, ok := tool["function"].(map[string]interface{}); ok {
+				paramsSource = fn["parameters"]
+			}
+		}
+		parameters, _ := json.Marshal(paramsSource)
+		result = append(result, IRTool{
+			Type:        "function",
+			Name:        name,
+			Description: description,
+			Parameters:  parameters,
+		})
+	}
+	return result
 }
 
 func encodeResponsesTools(tools []IRTool) []map[string]interface{} {
-	return encodeOpenAIChatTools(tools)
+	result := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		result = append(result, map[string]interface{}{
+			"type":        firstNonEmpty(tool.Type, "function"),
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  decodeRawToAny(tool.Parameters),
+		})
+	}
+	return result
 }
 
 func decodeAnthropicSystem(raw json.RawMessage) string {

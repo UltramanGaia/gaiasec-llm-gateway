@@ -44,6 +44,30 @@ func TestOpenAIChatResponseIRRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatResponseExtractsThinkTagsFromContent(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl_think",
+		"object":"chat.completion",
+		"model":"gpt-think",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"<think>private reasoning</think>\n\npong"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}
+	}`)
+
+	ir, err := DecodeOpenAIChatResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatResponse error: %v", err)
+	}
+	if len(ir.OutputItems) != 1 {
+		t.Fatalf("expected one output item, got %+v", ir.OutputItems)
+	}
+	if got := encodeTextContent(ir.OutputItems[0].Content); got != "pong" {
+		t.Fatalf("expected think tags removed from content, got %q", got)
+	}
+	if got := encodeReasoningContent(ir.OutputItems[0].Content); got != "private reasoning" {
+		t.Fatalf("expected reasoning extracted from think tags, got %q", got)
+	}
+}
+
 func TestOpenAIChatResponseVisionRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"id":"chatcmpl_img",
