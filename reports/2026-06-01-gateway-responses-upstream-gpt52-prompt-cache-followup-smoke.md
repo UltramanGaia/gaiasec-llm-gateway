@@ -2,7 +2,7 @@
 
 ## Scope
 
-This report records a dedicated real-upstream smoke result for `/v1/responses` follow-up using `previous_response_id` together with prompt cache fields on model `gpt-5.2`.
+This report records a dedicated real-upstream smoke result for a `/v1/responses` follow-up using `previous_response_id` together with prompt cache fields on model `gpt-5.2`.
 
 Gateway runtime:
 
@@ -52,6 +52,6 @@ Representative provider error:
 
 ## Conclusion
 
-This provides a richer multi-turn request-semantic classification case on the supported `openai_responses` route.
+This provides a richer multi-turn request-semantic limitation case on the supported `openai_responses` route.
 
 It shows that `prompt_cache_*` can succeed as a standalone request semantic on `gpt-5.2`, while the combination `previous_response_id + prompt_cache_*` is currently limited by upstream/provider behavior.

@@ -512,8 +512,9 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 		"status": "completed",
 	}
 	outputItems := make(map[int]map[string]interface{})
-	textDeltas := make(map[int]string)
+	textDeltas := make(map[int]map[int]string)
 	toolArgDeltas := make(map[int]string)
+	reasoningDeltas := make(map[int]string)
 	contentParts := make(map[int]map[int]map[string]interface{})
 	for {
 		frame, err := protocol.ReadSSEFrame(reader)
@@ -552,22 +553,41 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 		case "tool_call.delta":
 			index := numberValueToInt(payload["output_index"])
 			toolArgDeltas[index] += firstNonEmptyString(irEvent.Arguments, irEvent.Delta, stringValue(payload["delta"]))
+		case "tool_call.done":
+			index := numberValueToInt(payload["output_index"])
+			args := firstNonEmptyString(irEvent.Arguments, irEvent.Delta, stringValue(payload["arguments"]), stringValue(payload["delta"]))
+			if args != "" {
+				toolArgDeltas[index] = args
+			}
 		case "output_text.delta":
 			index := numberValueToInt(payload["output_index"])
-			textDeltas[index] += firstNonEmptyString(irEvent.Text, irEvent.Delta, stringValue(payload["delta"]))
+			contentIndex := numberValueToInt(payload["content_index"])
+			if textDeltas[index] == nil {
+				textDeltas[index] = make(map[int]string)
+			}
+			textDeltas[index][contentIndex] += firstNonEmptyString(irEvent.Text, irEvent.Delta, stringValue(payload["delta"]))
+			if partMap := contentParts[index]; partMap != nil {
+				if part := partMap[contentIndex]; part != nil && stringValue(part["type"]) == "output_text" {
+					part["text"] = textDeltas[index][contentIndex]
+				}
+			}
+		case "reasoning.delta":
+			index := numberValueToInt(payload["output_index"])
+			reasoningDeltas[index] += firstNonEmptyString(irEvent.Text, irEvent.Delta, stringValue(payload["delta"]))
 		case "annotation.added":
 			index := numberValueToInt(payload["output_index"])
+			contentIndex := numberValueToInt(payload["content_index"])
 			if contentParts[index] == nil {
 				contentParts[index] = make(map[int]map[string]interface{})
 			}
-			part := contentParts[index][0]
+			part := contentParts[index][contentIndex]
 			if part == nil {
-				part = map[string]interface{}{"type": "output_text", "text": textDeltas[index]}
+				part = map[string]interface{}{"type": "output_text", "text": textDeltaText(textDeltas, index, contentIndex)}
 			}
 			if annotations := decodeReplayIRAnnotations(irEvent.Annotations, payload["annotations"]); len(annotations) > 0 {
 				part["annotations"] = annotations
 			}
-			contentParts[index][0] = part
+			contentParts[index][contentIndex] = part
 		case "refusal.delta":
 			index := numberValueToInt(payload["output_index"])
 			contentIndex := numberValueToInt(payload["content_index"])
@@ -609,12 +629,14 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 			if item := decodeReplayIRItem(irEvent.Item, payload["item"]); len(item) > 0 {
 				cloned := cloneMap(item)
 				outputItems[index] = cloned
+				seedReplayMessageContentParts(contentParts, index, cloned)
 			}
 		case "response.output_item.done":
 			index := numberValueToInt(payload["output_index"])
 			if item := decodeReplayIRItem(irEvent.Item, payload["item"]); len(item) > 0 {
 				cloned := cloneMap(item)
 				outputItems[index] = cloned
+				seedReplayMessageContentParts(contentParts, index, cloned)
 			}
 		case "response.content_part.added", "response.content_part.done":
 			index := numberValueToInt(payload["output_index"])
@@ -655,6 +677,9 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 	var outputText strings.Builder
 	for _, index := range indexes {
 		item := outputItems[index]
+		if stringValue(item["status"]) == "in_progress" {
+			item["status"] = "completed"
+		}
 		switch stringValue(item["type"]) {
 		case "message":
 			if partMap := contentParts[index]; len(partMap) > 0 {
@@ -667,7 +692,7 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 				for _, contentIndex := range contentIndexes {
 					part := cloneMap(partMap[contentIndex])
 					if stringValue(part["type"]) == "output_text" {
-						if text := textDeltas[index]; text != "" && stringValue(part["text"]) == "" {
+						if text := textDeltaText(textDeltas, index, contentIndex); text != "" && stringValue(part["text"]) == "" {
 							part["text"] = text
 						}
 						outputText.WriteString(stringValue(part["text"]))
@@ -675,20 +700,39 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 					content = append(content, part)
 				}
 				item["content"] = content
-			} else if text := textDeltas[index]; text != "" {
+			} else if text := textDeltaText(textDeltas, index, 0); text != "" {
 				item["content"] = []map[string]interface{}{{
 					"type": "output_text",
 					"text": text,
 				}}
 				outputText.WriteString(text)
+			} else if content, ok := item["content"].([]interface{}); ok {
+				for _, rawPart := range content {
+					part, ok := rawPart.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if stringValue(part["type"]) == "output_text" {
+						outputText.WriteString(stringValue(part["text"]))
+					}
+				}
 			}
-		case "function_call", "custom_tool_call", "mcp_call", "web_search_call", "image_generation_call", "computer_call", "code_interpreter_call", "local_shell_call", "shell_call", "apply_patch_call":
+		case "function_call", "custom_tool_call", "mcp_call", "web_search_call", "file_search_call", "image_generation_call", "computer_call", "code_interpreter_call", "local_shell_call", "shell_call", "apply_patch_call":
 			if args := toolArgDeltas[index]; args != "" {
-				if _, ok := item["arguments"]; ok {
+				if stringValue(item["type"]) == "function_call" {
+					item["arguments"] = args
+				} else if _, ok := item["arguments"]; ok {
 					item["arguments"] = args
 				} else {
 					item["input"] = args
 				}
+			}
+		case "reasoning", "compaction":
+			if reasoning := reasoningDeltas[index]; reasoning != "" && extractSummaryText(item) == "" {
+				item["summary"] = []map[string]interface{}{{
+					"type": "summary_text",
+					"text": reasoning,
+				}}
 			}
 		}
 		output = append(output, item)
@@ -697,6 +741,7 @@ func aggregateResponsesReplayStream(raw string) (string, bool) {
 	if outputText.Len() > 0 {
 		response["output_text"] = outputText.String()
 	}
+	response["status"] = "completed"
 	normalized, err := json.Marshal(response)
 	if err != nil {
 		return "", false
@@ -715,6 +760,35 @@ func decodeReplayIRAnnotations(raw json.RawMessage, fallback interface{}) []inte
 		return annotations
 	}
 	return nil
+}
+
+func seedReplayMessageContentParts(contentParts map[int]map[int]map[string]interface{}, index int, item map[string]interface{}) {
+	if stringValue(item["type"]) != "message" {
+		return
+	}
+	content, _ := item["content"].([]interface{})
+	if len(content) == 0 {
+		return
+	}
+	if contentParts[index] == nil {
+		contentParts[index] = make(map[int]map[string]interface{})
+	}
+	for contentIndex, rawPart := range content {
+		part, ok := rawPart.(map[string]interface{})
+		if !ok || len(part) == 0 {
+			continue
+		}
+		if _, exists := contentParts[index][contentIndex]; !exists {
+			contentParts[index][contentIndex] = cloneMap(part)
+		}
+	}
+}
+
+func textDeltaText(textDeltas map[int]map[int]string, index, contentIndex int) string {
+	if textDeltas[index] == nil {
+		return ""
+	}
+	return textDeltas[index][contentIndex]
 }
 
 func decodeReplayIRAudio(raw json.RawMessage, fallback interface{}) map[string]interface{} {
@@ -853,10 +927,14 @@ func aggregateAnthropicReplayStream(raw string) (string, bool) {
 			} else if u, ok := payload["usage"].(map[string]interface{}); ok && len(u) > 0 {
 				usage = u
 			}
+		case "message_stop":
+			if stopReason == "" {
+				stopReason = defaultAnthropicReplayStopReason(blocks)
+			}
 		}
 	}
 
-	if message == nil || len(blocks) == 0 {
+	if message == nil {
 		return "", false
 	}
 
@@ -872,6 +950,9 @@ func aggregateAnthropicReplayStream(raw string) (string, bool) {
 		content = append(content, block)
 	}
 	message["content"] = content
+	if stopReason == "" {
+		stopReason = defaultAnthropicReplayStopReason(blocks)
+	}
 	if stopReason != "" {
 		message["stop_reason"] = stopReason
 	}
@@ -883,6 +964,15 @@ func aggregateAnthropicReplayStream(raw string) (string, bool) {
 		return "", false
 	}
 	return string(normalized), true
+}
+
+func defaultAnthropicReplayStopReason(blocks map[int]map[string]interface{}) string {
+	for _, block := range blocks {
+		if stringValue(block["type"]) == "tool_use" {
+			return "tool_use"
+		}
+	}
+	return "end_turn"
 }
 
 func anthropicReplayBlockFromIREvent(event protocol.IRStreamEvent) map[string]interface{} {
@@ -1051,9 +1141,6 @@ func summarizeResponsesSemantic(payload map[string]any) LogSemanticSummary {
 					partType := stringValue(part["type"])
 					switch partType {
 					case "output_text":
-						if summary.ReasoningSummary == "" && stringValue(part["text"]) != "" {
-							summary.ReasoningSummary = truncateForPreview(stringValue(part["text"]))
-						}
 						if annotations, ok := part["annotations"].([]any); ok {
 							summary.AnnotationCount += len(annotations)
 						}

@@ -168,151 +168,49 @@ if [ -n "$FIRST_RESPONSE_ID" ]; then
     "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"stream\":false}"
 
   echo "==> Responses previous_response_id stream"
-  run_http_capture \
-    "$ARTIFACT_DIR/responses-previous-stream-first" \
-    "POST" \
-    "$GATEWAY_URL/v1/responses" \
-    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
-
-  FIRST_STREAM_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-stream-first.headers" "$ARTIFACT_DIR/responses-previous-stream-first.body" <<'PY'
-import json
-import pathlib
-import sys
-
-headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
-if " 200 " not in headers:
-    print("")
-    raise SystemExit(0)
-payload = json.loads(body)
-print(payload.get("id", ""))
-PY
-)"
-  if [ -n "$FIRST_STREAM_RESPONSE_ID" ]; then
+  if [ -n "$FIRST_RESPONSE_ID" ]; then
     run_stream_capture \
       "$ARTIFACT_DIR/responses-previous-stream" \
       "POST" \
       "$GATEWAY_URL/v1/responses" \
-      "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_STREAM_RESPONSE_ID\",\"stream\":true}"
+      "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"stream\":true}"
   fi
 
   echo "==> Responses previous_response_id + tool non-stream"
-  run_http_capture \
-    "$ARTIFACT_DIR/responses-previous-tool-first" \
-    "POST" \
-    "$GATEWAY_URL/v1/responses" \
-    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
-
-  FIRST_TOOL_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-tool-first.headers" "$ARTIFACT_DIR/responses-previous-tool-first.body" <<'PY'
-import json
-import pathlib
-import sys
-
-headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
-if " 200 " not in headers:
-    print("")
-    raise SystemExit(0)
-payload = json.loads(body)
-print(payload.get("id", ""))
-PY
-)"
-  if [ -n "$FIRST_TOOL_RESPONSE_ID" ]; then
+  if [ -n "$FIRST_RESPONSE_ID" ]; then
     run_http_capture \
       "$ARTIFACT_DIR/responses-previous-tool-second" \
       "POST" \
       "$GATEWAY_URL/v1/responses" \
-      "{\"model\":\"$CONFIG_NAME\",\"input\":\"Use the provided function to get weather for Hangzhou. Do not answer directly.\",\"previous_response_id\":\"$FIRST_TOOL_RESPONSE_ID\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather by city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"stream\":false}"
+      "{\"model\":\"$CONFIG_NAME\",\"input\":\"Use the provided function to get weather for Hangzhou. Do not answer directly.\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather by city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"stream\":false}"
   fi
 
-echo "==> Responses previous_response_id + tool stream"
-  run_http_capture \
-    "$ARTIFACT_DIR/responses-previous-tool-stream-first" \
-    "POST" \
-    "$GATEWAY_URL/v1/responses" \
-    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
-
-  FIRST_TOOL_STREAM_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-tool-stream-first.headers" "$ARTIFACT_DIR/responses-previous-tool-stream-first.body" <<'PY'
-import json
-import pathlib
-import sys
-
-headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
-if " 200 " not in headers:
-    print("")
-    raise SystemExit(0)
-payload = json.loads(body)
-print(payload.get("id", ""))
-PY
-)"
-  if [ -n "$FIRST_TOOL_STREAM_RESPONSE_ID" ]; then
+  echo "==> Responses previous_response_id + tool stream"
+  if [ -n "$FIRST_RESPONSE_ID" ]; then
     run_stream_capture \
       "$ARTIFACT_DIR/responses-previous-tool-stream" \
       "POST" \
       "$GATEWAY_URL/v1/responses" \
-      "{\"model\":\"$CONFIG_NAME\",\"input\":\"Use the provided function to get weather for Hangzhou. Do not answer directly.\",\"previous_response_id\":\"$FIRST_TOOL_STREAM_RESPONSE_ID\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather by city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"stream\":true}"
+      "{\"model\":\"$CONFIG_NAME\",\"input\":\"Use the provided function to get weather for Hangzhou. Do not answer directly.\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather by city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"tool_choice\":{\"type\":\"function\",\"name\":\"get_weather\"},\"stream\":true}"
   fi
 fi
 
 echo "==> Responses previous_response_id + structured output non-stream"
-run_http_capture \
-  "$ARTIFACT_DIR/responses-previous-structured-first" \
-  "POST" \
-  "$GATEWAY_URL/v1/responses" \
-  "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
-
-FIRST_STRUCTURED_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-structured-first.headers" "$ARTIFACT_DIR/responses-previous-structured-first.body" <<'PY'
-import json
-import pathlib
-import sys
-
-headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
-if " 200 " not in headers:
-    print("")
-    raise SystemExit(0)
-payload = json.loads(body)
-print(payload.get("id", ""))
-PY
-)"
-
-if [ -n "$FIRST_STRUCTURED_RESPONSE_ID" ]; then
+if [ -n "$FIRST_RESPONSE_ID" ]; then
   run_http_capture \
     "$ARTIFACT_DIR/responses-previous-structured-second" \
     "POST" \
     "$GATEWAY_URL/v1/responses" \
-    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Return a JSON object with exactly one field named pong and value true.\",\"previous_response_id\":\"$FIRST_STRUCTURED_RESPONSE_ID\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"pong_result\",\"schema\":{\"type\":\"object\",\"properties\":{\"pong\":{\"type\":\"boolean\"}},\"required\":[\"pong\"],\"additionalProperties\":false}}},\"stream\":false}"
+    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Return a JSON object with exactly one field named pong and value true.\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"pong_result\",\"schema\":{\"type\":\"object\",\"properties\":{\"pong\":{\"type\":\"boolean\"}},\"required\":[\"pong\"],\"additionalProperties\":false}}},\"stream\":false}"
 fi
 
 echo "==> Responses previous_response_id + structured output stream"
-run_http_capture \
-  "$ARTIFACT_DIR/responses-previous-structured-stream-first" \
-  "POST" \
-  "$GATEWAY_URL/v1/responses" \
-  "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
-
-FIRST_STRUCTURED_STREAM_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-structured-stream-first.headers" "$ARTIFACT_DIR/responses-previous-structured-stream-first.body" <<'PY'
-import json
-import pathlib
-import sys
-
-headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
-if " 200 " not in headers:
-    print("")
-    raise SystemExit(0)
-payload = json.loads(body)
-print(payload.get("id", ""))
-PY
-)"
-
-if [ -n "$FIRST_STRUCTURED_STREAM_RESPONSE_ID" ]; then
+if [ -n "$FIRST_RESPONSE_ID" ]; then
   run_stream_capture \
     "$ARTIFACT_DIR/responses-previous-structured-stream" \
     "POST" \
     "$GATEWAY_URL/v1/responses" \
-    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Return a JSON object with exactly one field named pong and value true.\",\"previous_response_id\":\"$FIRST_STRUCTURED_STREAM_RESPONSE_ID\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"pong_result\",\"schema\":{\"type\":\"object\",\"properties\":{\"pong\":{\"type\":\"boolean\"}},\"required\":[\"pong\"],\"additionalProperties\":false}}},\"stream\":true}"
+    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Return a JSON object with exactly one field named pong and value true.\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"pong_result\",\"schema\":{\"type\":\"object\",\"properties\":{\"pong\":{\"type\":\"boolean\"}},\"required\":[\"pong\"],\"additionalProperties\":false}}},\"stream\":true}"
 fi
 
 echo "==> Responses prompt_cache non-stream"
@@ -323,33 +221,30 @@ run_http_capture \
   "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"24h\",\"stream\":false}"
 
 echo "==> Responses previous_response_id + prompt_cache non-stream"
-run_http_capture \
-  "$ARTIFACT_DIR/responses-previous-prompt-first" \
-  "POST" \
-  "$GATEWAY_URL/v1/responses" \
-  "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
-
-FIRST_PROMPT_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-prompt-first.headers" "$ARTIFACT_DIR/responses-previous-prompt-first.body" <<'PY'
-import json
-import pathlib
-import sys
-
-headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
-if " 200 " not in headers:
-    print("")
-    raise SystemExit(0)
-payload = json.loads(body)
-print(payload.get("id", ""))
-PY
-)"
-
-if [ -n "$FIRST_PROMPT_RESPONSE_ID" ]; then
+if [ -n "$FIRST_RESPONSE_ID" ]; then
   run_http_capture \
     "$ARTIFACT_DIR/responses-previous-prompt-second" \
     "POST" \
     "$GATEWAY_URL/v1/responses" \
-    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_PROMPT_RESPONSE_ID\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"24h\",\"stream\":false}"
+    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"24h\",\"stream\":false}"
+fi
+
+echo "==> Responses previous_response_id + prompt_cache stream"
+if [ -n "$FIRST_RESPONSE_ID" ]; then
+  run_stream_capture \
+    "$ARTIFACT_DIR/responses-previous-prompt-stream" \
+    "POST" \
+    "$GATEWAY_URL/v1/responses" \
+    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"24h\",\"stream\":true}"
+fi
+
+echo "==> Responses previous_response_id + include non-stream"
+if [ -n "$FIRST_RESPONSE_ID" ]; then
+  run_http_capture \
+    "$ARTIFACT_DIR/responses-previous-include-second" \
+    "POST" \
+    "$GATEWAY_URL/v1/responses" \
+    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_RESPONSE_ID\",\"include\":[\"reasoning.encrypted_content\"],\"stream\":false}"
 fi
 
 python3 - "$ARTIFACT_DIR" <<'PY'
@@ -369,19 +264,30 @@ def classify_http(headers_path: pathlib.Path) -> str:
         return "failed_upstream"
     return "unexpected"
 
+def classify_followup(first_headers: pathlib.Path, second_headers: pathlib.Path) -> str:
+    first = classify_http(first_headers)
+    if first == "passed":
+        return classify_http(second_headers)
+    if first == "failed_upstream":
+        return "failed_upstream"
+    return first
+
 summary = {
     "config_id": json.loads((artifact_dir / "config-upsert.json").read_text(encoding="utf-8"))["id"],
     "responses_baseline_nonstream": classify_http(artifact_dir / "responses-baseline.headers"),
     "responses_baseline_stream": classify_http(artifact_dir / "responses-baseline-stream.headers"),
-    "responses_previous_response_nonstream": classify_http(artifact_dir / "responses-previous-second.headers"),
-    "responses_previous_response_stream": classify_http(artifact_dir / "responses-previous-stream.headers"),
-    "responses_previous_response_tool_nonstream": classify_http(artifact_dir / "responses-previous-tool-second.headers"),
-    "responses_previous_response_tool_stream": classify_http(artifact_dir / "responses-previous-tool-stream.headers"),
-    "responses_previous_response_structured_nonstream": classify_http(artifact_dir / "responses-previous-structured-second.headers"),
-    "responses_previous_response_structured_stream": classify_http(artifact_dir / "responses-previous-structured-stream.headers"),
+    "responses_previous_response_nonstream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-second.headers"),
+    "responses_previous_response_stream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-stream.headers"),
+    "responses_previous_response_tool_nonstream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-tool-second.headers"),
+    "responses_previous_response_tool_stream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-tool-stream.headers"),
+    "responses_previous_response_structured_nonstream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-structured-second.headers"),
+    "responses_previous_response_structured_stream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-structured-stream.headers"),
     "responses_prompt_cache_nonstream": classify_http(artifact_dir / "responses-prompt-cache.headers"),
-    "responses_previous_response_prompt_cache_nonstream": classify_http(artifact_dir / "responses-previous-prompt-second.headers"),
+    "responses_previous_response_prompt_cache_nonstream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-prompt-second.headers"),
+    "responses_previous_response_prompt_cache_stream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-prompt-stream.headers"),
+    "responses_previous_response_include_nonstream": classify_followup(artifact_dir / "responses-previous-first.headers", artifact_dir / "responses-previous-include-second.headers"),
 }
+(artifact_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=True, indent=2), encoding="utf-8")
 print(json.dumps(summary, ensure_ascii=True, indent=2))
 PY
 

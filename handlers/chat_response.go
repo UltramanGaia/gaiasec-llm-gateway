@@ -280,7 +280,11 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 
 	finishReason := lastFinishReason
 	if finishReason == "" {
-		finishReason = "stop"
+		if len(result.ToolCalls) > 0 {
+			finishReason = "tool_calls"
+		} else {
+			finishReason = "stop"
+		}
 	}
 
 	cachedResp := struct {
@@ -793,6 +797,7 @@ func (h *ChatHandler) handleResponsesFromAnthropicStreamResponse(w http.Response
 	}
 	reader := bufio.NewReader(resp.Body)
 	var seqNum int64
+	var sawCompleted bool
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	for {
@@ -806,7 +811,10 @@ func (h *ChatHandler) handleResponsesFromAnthropicStreamResponse(w http.Response
 		rawStream.WriteString(protocol.FormatSSEFrame(frame))
 		events, done, responseID, model := protocol.ResponsesEventsFromAnthropicFrame(frame, state, &seqNum)
 		for _, event := range events {
-			if event.Event == "response.output_text.delta" || event.Event == "response.function_call_arguments.delta" {
+			if event.Event == "response.completed" {
+				sawCompleted = true
+			}
+			if responsesEventHasOutputToken(event) {
 				metrics.Record(time.Now())
 			}
 			line := protocol.FormatResponsesStreamEvent(event)
@@ -817,10 +825,21 @@ func (h *ChatHandler) handleResponsesFromAnthropicStreamResponse(w http.Response
 			}
 		}
 		if done {
-			h.writeResponsesStreamDone(w, responseID, model, "", seqNum)
-			outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesDoneEvent(responseID, model, "", seqNum+1)))
-			outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesTerminalDoneEvent(seqNum + 2)))
-			outStream.WriteString("data: [DONE]\n\n")
+			if !sawCompleted {
+				h.writeResponsesStreamDone(w, responseID, model, "", seqNum)
+				outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesDoneEvent(responseID, model, "", seqNum+1)))
+				outStream.WriteString(protocol.FormatResponsesStreamEvent(protocol.BuildResponsesTerminalDoneEvent(seqNum + 2)))
+				outStream.WriteString("data: [DONE]\n\n")
+			} else {
+				terminal := protocol.BuildResponsesTerminalDoneEvent(seqNum + 1)
+				w.Write([]byte(protocol.FormatResponsesStreamEvent(terminal)))
+				w.Write([]byte("data: [DONE]\n\n"))
+				outStream.WriteString(protocol.FormatResponsesStreamEvent(terminal))
+				outStream.WriteString("data: [DONE]\n\n")
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
 			break
 		}
 	}
@@ -828,6 +847,49 @@ func (h *ChatHandler) handleResponsesFromAnthropicStreamResponse(w http.Response
 	reqLog.Response = outStream.String()
 	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
 	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+}
+
+func responsesEventHasOutputToken(event protocol.ResponsesStreamEvent) bool {
+	switch event.Event {
+	case "response.output_text.delta",
+		"response.reasoning.delta",
+		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
+		"response.annotation.added",
+		"response.refusal.done",
+		"response.audio.done":
+		return true
+	case "response.output_item.added", "response.output_item.done":
+		data, _ := event.Data.(map[string]interface{})
+		item, _ := data["item"].(map[string]interface{})
+		if len(item) == 0 {
+			return false
+		}
+		switch item["type"] {
+		case "function_call", "custom_tool_call", "mcp_call", "web_search_call", "file_search_call", "image_generation_call", "computer_call", "code_interpreter_call", "local_shell_call", "shell_call", "apply_patch_call":
+			return strings.TrimSpace(stringValue(item["arguments"])) != "" || strings.TrimSpace(stringValue(item["input"])) != ""
+		case "reasoning":
+			return strings.TrimSpace(responseItemSummaryText(item)) != ""
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func responseItemSummaryText(item map[string]interface{}) string {
+	summary, _ := item["summary"].([]interface{})
+	for _, raw := range summary {
+		part, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if text := stringValue(part["text"]); strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (h *ChatHandler) handleChatFromResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog, config models.ModelConfig) {
@@ -987,6 +1049,10 @@ func anthropicFrameHasOutputToken(frame protocol.SSEFrame) bool {
 		switch event.Type {
 		case "output_text.delta", "reasoning.delta", "refusal.delta", "audio.delta", "annotation.added", "tool_call.start", "tool_call.delta":
 			return true
+		case "reasoning.start":
+			if strings.TrimSpace(event.Text) != "" {
+				return true
+			}
 		}
 	}
 	if frame.Event == "content_block_delta" {
@@ -1074,8 +1140,10 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 
 			if choices, ok := chatChunk["choices"].([]interface{}); ok && len(choices) > 0 {
 				chunkCount++
-				metrics.Record(time.Now())
 				responsesEvents := protocol.ConvertChatChunkToResponsesEventsStateful(chatChunk, seqNum, state)
+				if responsesEventsHasOutputToken(responsesEvents) {
+					metrics.Record(time.Now())
+				}
 				for _, event := range responsesEvents {
 					eventLine := protocol.FormatResponsesStreamEvent(event)
 					w.Write([]byte(eventLine))
@@ -1105,6 +1173,15 @@ func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp 
 		"first_token_latency": metrics.FirstTokenLatency(),
 		"avg_token_latency":   metrics.AvgTokenLatency(),
 	}).Info("Responses stream response completed")
+}
+
+func responsesEventsHasOutputToken(events []protocol.ResponsesStreamEvent) bool {
+	for _, event := range events {
+		if responsesEventHasOutputToken(event) {
+			return true
+		}
+	}
+	return false
 }
 
 func convertChatStreamChunkToResponsesEvents(chatChunk map[string]interface{}, seqNum int64) []protocol.ResponsesStreamEvent {

@@ -172,6 +172,102 @@ func TestResponsesHandlerRejectsPreviousResponseIDForAnthropicUpstream(t *testin
 	}
 }
 
+func TestResponsesHandlerRejectsPromptCacheForChatUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	config := models.ModelConfig{
+		Name:         "responses-prompt-cache-chat-upstream",
+		ModelName:    "backend-chat",
+		APIBaseURL:   "http://example.invalid",
+		APIKey:       "key",
+		UpstreamType: models.UpstreamTypeOpenAIChat,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-prompt-cache-chat-upstream","input":"hello","prompt_cache_key":"cache-key","prompt_cache_retention":"24h","stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "prompt_cache") {
+		t.Fatalf("expected prompt_cache rejection, got %s", recorder.Body.String())
+	}
+}
+
+func TestResponsesHandlerRejectsPromptCacheForAnthropicUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	config := models.ModelConfig{
+		Name:         "responses-prompt-cache-anthropic-upstream",
+		ModelName:    "backend-anthropic",
+		APIBaseURL:   "http://example.invalid",
+		APIKey:       "key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-prompt-cache-anthropic-upstream","input":"hello","prompt_cache_key":"cache-key","prompt_cache_retention":"24h","stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "prompt_cache") {
+		t.Fatalf("expected prompt_cache rejection, got %s", recorder.Body.String())
+	}
+}
+
+func TestResponsesHandlerRejectsResponsesOnlyFieldsForChatUpstream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	config := models.ModelConfig{
+		Name:         "responses-only-fields-chat-upstream",
+		ModelName:    "backend-chat",
+		APIBaseURL:   "http://example.invalid",
+		APIKey:       "key",
+		UpstreamType: models.UpstreamTypeOpenAIChat,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-only-fields-chat-upstream","input":"hello","include":["reasoning.encrypted_content"],"store":true,"background":false,"conversation":{"id":"conv_1"},"prompt":{"id":"pmpt_1"},"stream":false}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	bodyText := recorder.Body.String()
+	for _, token := range []string{"include", "store", "background", "conversation", "prompt"} {
+		if !strings.Contains(bodyText, token) {
+			t.Fatalf("expected %s rejection, got %s", token, bodyText)
+		}
+	}
+}
+
 func TestChatHandlerPassthroughsToChatUpstream(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -2324,6 +2420,162 @@ func TestChatHandlerTransformsAnthropicToolUseStreamToChatToolCall(t *testing.T)
 	}
 }
 
+func TestChatHandlerTransformsAnthropicMessageStopWithoutDeltaToChatFinish(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_tool_stop_only","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":3}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{}}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-anthropic-stop-only-stream",
+		ModelName:    "claude-stream",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-anthropic-stop-only-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"finish_reason":"tool_calls"`) || !strings.Contains(got, `data: [DONE]`) {
+		t.Fatalf("expected message_stop flush to emit chat finish chunk, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsAnthropicToolUseStartInputToChatToolArgs(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_tool_start","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":3}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"hello"}}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-anthropic-tool-start-stream",
+		ModelName:    "claude-stream",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-anthropic-tool-start-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"name":"lookup"`) || !strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) {
+		t.Fatalf("expected tool_use start input to convert to chat tool args, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsAnthropicThinkingStartTextToChatReasoning(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_reasoning_start","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":3}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"think step","signature":""}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-anthropic-reasoning-start-stream",
+		ModelName:    "claude-stream",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-anthropic-reasoning-start-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"reasoning_content":"think step"`) {
+		t.Fatalf("expected anthropic thinking start text to convert to chat reasoning, got %s", got)
+	}
+}
+
 func TestResponsesHandlerTransformsAnthropicStreamToResponsesStream(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -2504,6 +2756,55 @@ func TestAnthropicHandlerTransformsResponsesRicherStreamToAnthropicStream(t *tes
 	}
 }
 
+func TestAnthropicHandlerTransformsResponsesAddedRicherContentToAnthropicStream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","status":"in_progress","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]},{"type":"refusal","refusal":"blocked"},{"type":"output_audio","audio":{"id":"aud_1","format":"wav"}}]}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_rich_added","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-rich-added-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-rich-added-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"text":"hello"`) || !strings.Contains(got, `"annotations"`) || !strings.Contains(got, `"refusal":"blocked"`) || !strings.Contains(got, `"aud_1"`) {
+		t.Fatalf("expected output_item.added richer content to convert to anthropic stream, got %s", got)
+	}
+}
+
 func TestResponsesHandlerTransformsAnthropicThinkingStreamToResponsesReasoningStream(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -2560,6 +2861,59 @@ func TestResponsesHandlerTransformsAnthropicThinkingStreamToResponsesReasoningSt
 	}
 }
 
+func TestResponsesHandlerTransformsAnthropicThinkingStartTextToResponsesReasoning(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_reasoning_start","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":3}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"think step","signature":""}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "responses-anthropic-reasoning-start-stream",
+		ModelName:    "claude-stream",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-anthropic-reasoning-start-stream","input":"hello","stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `event: response.reasoning.delta`) || !strings.Contains(got, `"delta":"think step"`) {
+		t.Fatalf("expected anthropic thinking start text to convert to responses reasoning, got %s", got)
+	}
+}
+
 func TestResponsesHandlerTransformsAnthropicToolUseStreamToResponsesFunctionCallStream(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -2611,8 +2965,126 @@ func TestResponsesHandlerTransformsAnthropicToolUseStreamToResponsesFunctionCall
 		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	got := recorder.Body.String()
-	if !strings.Contains(got, `event: response.output_item.added`) || !strings.Contains(got, `"type":"function_call"`) || !strings.Contains(got, `"delta":"{\"q\":\"hello\"}"`) {
+	if !strings.Contains(got, `event: response.output_item.added`) ||
+		!strings.Contains(got, `"type":"function_call"`) ||
+		!strings.Contains(got, `"delta":"{\"q\":\"hello\"}"`) ||
+		!strings.Contains(got, `event: response.function_call_arguments.done`) ||
+		!strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) ||
+		!strings.Contains(got, `event: response.output_item.done`) ||
+		!strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) {
 		t.Fatalf("expected anthropic tool_use stream to convert to responses function_call stream, got %s", got)
+	}
+	if strings.Count(got, `event: response.completed`) != 1 {
+		t.Fatalf("expected exactly one response.completed event, got %s", got)
+	}
+}
+
+func TestResponsesHandlerTransformsAnthropicMessageStopWithoutDeltaToResponsesCompleted(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_stop_only","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":3}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{}}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "responses-anthropic-stop-only-stream",
+		ModelName:    "claude-stream",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-anthropic-stop-only-stream","input":"hello","stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `event: response.output_item.done`) || !strings.Contains(got, `event: response.completed`) || !strings.Contains(got, `data: [DONE]`) {
+		t.Fatalf("expected message_stop flush to emit responses completion lifecycle, got %s", got)
+	}
+	if strings.Count(got, `event: response.completed`) != 1 {
+		t.Fatalf("expected exactly one response.completed event, got %s", got)
+	}
+}
+
+func TestResponsesHandlerTransformsAnthropicToolUseStartInputToResponsesFunctionCall(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_tool_start","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":3}}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"hello"}}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "responses-anthropic-tool-start-stream",
+		ModelName:    "claude-stream",
+		APIBaseURL:   provider.URL,
+		APIKey:       "anthropic-key",
+		UpstreamType: models.UpstreamTypeAnthropicMessages,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"responses-anthropic-tool-start-stream","input":"hello","stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).Responses(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"type":"function_call"`) || !strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) {
+		t.Fatalf("expected tool_use start input to convert to responses function_call args, got %s", got)
+	}
+	if strings.Count(got, `event: response.function_call_arguments.done`) != 1 {
+		t.Fatalf("expected exactly one arguments.done event for start-only input, got %s", got)
 	}
 }
 
@@ -2731,6 +3203,9 @@ func TestAnthropicHandlerTransformsResponsesReasoningStreamToAnthropicThinkingSt
 		"event: response.reasoning.delta",
 		`data: {"type":"response.reasoning.delta","output_index":50,"item_id":"rs_1","delta":"think step"}`,
 		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"think step"}]}}`,
+		"",
 		"event: response.completed",
 		`data: {"type":"response.completed","response":{"id":"resp_reasoning","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
 		"",
@@ -2766,8 +3241,112 @@ func TestAnthropicHandlerTransformsResponsesReasoningStreamToAnthropicThinkingSt
 		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	got := recorder.Body.String()
-	if !strings.Contains(got, `event: content_block_start`) || !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"think step"`) {
+	if !strings.Contains(got, `event: content_block_start`) || !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"think step"`) || !strings.Contains(got, `event: content_block_stop`) {
 		t.Fatalf("expected responses reasoning stream to convert to anthropic thinking stream, got %s", got)
+	}
+}
+
+func TestAnthropicHandlerTransformsResponsesReasoningOutputItemDoneToAnthropicThinking(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reasoning_done","object":"response","status":"in_progress","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"think step"}]}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_reasoning_done","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-reasoning-item-done-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-reasoning-item-done-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `event: content_block_start`) || !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"think step"`) || !strings.Contains(got, `event: content_block_stop`) {
+		t.Fatalf("expected responses reasoning output_item.done to convert to anthropic thinking, got %s", got)
+	}
+}
+
+func TestAnthropicHandlerTransformsResponsesReasoningAddedSummaryToAnthropicThinking(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reasoning_added","object":"response","status":"in_progress","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"in_progress","summary":[{"type":"summary_text","text":"think step"}]}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_reasoning_added","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-reasoning-added-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-reasoning-added-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `event: content_block_start`) || !strings.Contains(got, `"type":"thinking"`) || !strings.Contains(got, `"thinking":"think step"`) {
+		t.Fatalf("expected responses reasoning added summary to convert to anthropic thinking start, got %s", got)
 	}
 }
 
@@ -2829,6 +3408,373 @@ func TestChatHandlerTransformsResponsesToolStreamToChatToolFinish(t *testing.T) 
 	}
 }
 
+func TestChatHandlerTransformsResponsesToolArgumentsDoneToChatToolArgs(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_tool_done","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":5,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"in_progress"}}`,
+		"",
+		"event: response.function_call_arguments.done",
+		`data: {"type":"response.function_call_arguments.done","output_index":5,"arguments":"{\"q\":\"hello\"}"}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_tool_done","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-tool-done-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-tool-done-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"name":"lookup"`) || !strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) || !strings.Contains(got, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected responses tool arguments.done to convert to chat tool args, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsResponsesToolOutputItemDoneToChatToolArgs(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_tool_item_done","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":5,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":5,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"completed","arguments":"{\"q\":\"hello\"}"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_tool_item_done","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-tool-item-done-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-tool-item-done-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"name":"lookup"`) || !strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) || !strings.Contains(got, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected responses output_item.done to convert to chat tool args, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsResponsesToolAddedArgumentsToChatToolArgs(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_tool_added","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":5,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"in_progress","arguments":"{\"q\":\"hello\"}"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_tool_added","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-tool-added-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-tool-added-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"name":"lookup"`) || !strings.Contains(got, `"arguments":"{\"q\":\"hello\"}"`) {
+		t.Fatalf("expected output_item.added arguments to populate chat tool args, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsResponsesDoneWithoutCompletedToChatFinish(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_done_only","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":5,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"in_progress"}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-done-only-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-done-only-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"finish_reason":"tool_calls"`) || !strings.Contains(got, `data: [DONE]`) {
+		t.Fatalf("expected [DONE] flush to emit chat finish chunk, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsResponsesReasoningOutputItemDoneToChatReasoning(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reasoning_item_done","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"think step"}]}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_reasoning_item_done","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-reasoning-item-done-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-reasoning-item-done-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"reasoning_content":"think step"`) {
+		t.Fatalf("expected responses reasoning output_item.done to convert to chat reasoning, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsResponsesReasoningAddedSummaryToChatReasoning(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reasoning_added","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"in_progress","summary":[{"type":"summary_text","text":"think step"}]}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_reasoning_added","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-reasoning-added-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-reasoning-added-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"reasoning_content":"think step"`) {
+		t.Fatalf("expected responses reasoning added summary to convert to chat reasoning, got %s", got)
+	}
+}
+
+func TestChatHandlerTransformsResponsesAddedRicherContentToChatStream(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_start_only","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","status":"in_progress","role":"assistant","content":[{"type":"output_text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]},{"type":"refusal","refusal":"blocked"},{"type":"output_audio","audio":{"id":"aud_1","format":"wav"}}]}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_start_only","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "chat-responses-rich-added-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"chat-responses-rich-added-stream","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).ChatCompletion(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"content":"hello"`) || !strings.Contains(got, `"annotations"`) || !strings.Contains(got, `"refusal":"blocked"`) || !strings.Contains(got, `"aud_1"`) {
+		t.Fatalf("expected output_item.added richer content to convert to chat stream, got %s", got)
+	}
+}
+
 func TestAnthropicHandlerTransformsResponsesToolStreamToToolUse(t *testing.T) {
 	resetBackendRuntimeManagerForTests()
 	InvalidateAllModelConfigCache()
@@ -2846,6 +3792,9 @@ func TestAnthropicHandlerTransformsResponsesToolStreamToToolUse(t *testing.T) {
 		"",
 		"event: response.function_call_arguments.done",
 		`data: {"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"q\":\"hello\"}"}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"completed","arguments":"{\"q\":\"hello\"}"}}`,
 		"",
 		"event: response.completed",
 		`data: {"type":"response.completed","response":{"id":"resp_tool2","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
@@ -2882,8 +3831,222 @@ func TestAnthropicHandlerTransformsResponsesToolStreamToToolUse(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	got := recorder.Body.String()
-	if !strings.Contains(got, `"type":"tool_use"`) || !strings.Contains(got, `"stop_reason":"tool_use"`) {
+	if !strings.Contains(got, `"type":"tool_use"`) || !strings.Contains(got, `event: content_block_stop`) || !strings.Contains(got, `"stop_reason":"tool_use"`) {
 		t.Fatalf("expected responses tool stream to convert to anthropic tool_use, got %s", got)
+	}
+}
+
+func TestAnthropicHandlerTransformsResponsesToolAddedArgumentsToToolUseInput(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_tool_added","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"in_progress","arguments":"{\"q\":\"hello\"}"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_tool_added","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-tool-added-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-tool-added-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"type":"tool_use"`) || !strings.Contains(got, `"input":{"q":"hello"}`) {
+		t.Fatalf("expected output_item.added arguments to populate anthropic tool_use start input, got %s", got)
+	}
+}
+
+func TestAnthropicHandlerTransformsResponsesDoneWithoutCompletedToAnthropicToolUseStop(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_done_only","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"in_progress"}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-done-only-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-done-only-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"type":"tool_use"`) || !strings.Contains(got, `event: message_delta`) || !strings.Contains(got, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected [DONE] flush to infer anthropic tool_use stop_reason, got %s", got)
+	}
+}
+
+func TestAnthropicHandlerTransformsResponsesToolArgumentsDoneToToolUseInput(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_tool_done_only","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"in_progress"}}`,
+		"",
+		"event: response.function_call_arguments.done",
+		`data: {"type":"response.function_call_arguments.done","output_index":2,"arguments":"{\"q\":\"hello\"}"}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"completed","arguments":"{\"q\":\"hello\"}"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_tool_done_only","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-tool-done-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-tool-done-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"type":"tool_use"`) || !strings.Contains(got, `"partial_json":"{\"q\":\"hello\"}"`) || !strings.Contains(got, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected responses function_call_arguments.done to convert to anthropic tool input, got %s", got)
+	}
+}
+
+func TestAnthropicHandlerTransformsResponsesToolOutputItemDoneToToolUseInput(t *testing.T) {
+	resetBackendRuntimeManagerForTests()
+	InvalidateAllModelConfigCache()
+	db := newModelConfigTestDB(t)
+
+	stream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_tool_item_done","model":"resp-backend"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.done",
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"fc_2","name":"lookup","status":"completed","arguments":"{\"q\":\"hello\"}"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_tool_item_done","object":"response","status":"completed","model":"resp-backend","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer provider.Close()
+
+	config := models.ModelConfig{
+		Name:         "anthropic-responses-tool-item-done-stream",
+		ModelName:    "resp-backend",
+		APIBaseURL:   provider.URL,
+		APIKey:       "responses-key",
+		UpstreamType: models.UpstreamTypeOpenAIResponses,
+		Enabled:      true,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	body := []byte(`{"model":"anthropic-responses-tool-item-done-stream","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":16,"stream":true}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	NewChatHandler(db).AnthropicMessages(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	got := recorder.Body.String()
+	if !strings.Contains(got, `"type":"tool_use"`) || !strings.Contains(got, `"partial_json":"{\"q\":\"hello\"}"`) || !strings.Contains(got, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected responses output_item.done to convert to anthropic tool input, got %s", got)
 	}
 }
 

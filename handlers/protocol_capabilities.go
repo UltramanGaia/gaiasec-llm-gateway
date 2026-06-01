@@ -17,6 +17,11 @@ type capabilityRequirements struct {
 	Vision            bool
 	AudioOutput       bool
 	PreviousResponse  bool
+	Include           bool
+	Store             bool
+	Background        bool
+	Conversation      bool
+	Prompt            bool
 	ParallelToolCalls bool
 	WebSearch         bool
 	MCP               bool
@@ -35,6 +40,11 @@ func deriveCapabilityRequirements(inbound protocol.InboundProtocol, rawBody map[
 	reqs.Vision = requestUsesVision(inbound, rawBody)
 	reqs.AudioOutput = requestUsesAudioOutput(inbound, rawBody)
 	reqs.PreviousResponse = requestUsesPreviousResponseID(inbound, rawBody)
+	reqs.Include = requestUsesInclude(inbound, rawBody)
+	reqs.Store = requestUsesStore(inbound, rawBody)
+	reqs.Background = requestUsesBackground(inbound, rawBody)
+	reqs.Conversation = requestUsesConversation(inbound, rawBody)
+	reqs.Prompt = requestUsesPrompt(inbound, rawBody)
 	reqs.ParallelToolCalls = requestUsesParallelToolCalls(inbound, rawBody)
 	reqs.WebSearch = requestUsesBuiltInToolType(rawBody, "web_search", "web_search_preview")
 	reqs.MCP = requestUsesBuiltInToolType(rawBody, "mcp")
@@ -67,6 +77,21 @@ func validateModelCapabilities(config models.ModelConfig, reqs capabilityRequire
 	}
 	if reqs.PreviousResponse && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
 		unsupported = append(unsupported, "previous_response_id")
+	}
+	if reqs.Include && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "include")
+	}
+	if reqs.Store && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "store")
+	}
+	if reqs.Background && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "background")
+	}
+	if reqs.Conversation && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "conversation")
+	}
+	if reqs.Prompt && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "prompt")
 	}
 	if reqs.WebSearch && !config.SupportsWebSearch {
 		unsupported = append(unsupported, "web_search")
@@ -265,6 +290,26 @@ func requestUsesPreviousResponseID(inbound protocol.InboundProtocol, rawBody map
 	return false
 }
 
+func requestUsesInclude(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	return inbound == protocol.InboundProtocolResponses && hasUsableArrayField(rawBody["include"])
+}
+
+func requestUsesStore(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	return inbound == protocol.InboundProtocolResponses && hasUsableRawField(rawBody["store"])
+}
+
+func requestUsesBackground(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	return inbound == protocol.InboundProtocolResponses && hasUsableRawField(rawBody["background"])
+}
+
+func requestUsesConversation(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	return inbound == protocol.InboundProtocolResponses && hasUsableRawField(rawBody["conversation"])
+}
+
+func requestUsesPrompt(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	return inbound == protocol.InboundProtocolResponses && hasUsableRawField(rawBody["prompt"])
+}
+
 func requestUsesParallelToolCalls(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
 	if inbound == protocol.InboundProtocolAnthropic {
 		if rawChoice, ok := rawBody["tool_choice"]; ok && len(rawChoice) > 0 {
@@ -327,6 +372,11 @@ func decodeToolTypes(raw json.RawMessage) []string {
 func hasUsableRawField(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null" && trimmed != "\"\""
+}
+
+func hasUsableArrayField(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null" && trimmed != "[]"
 }
 
 func chatMessagesUseVision(raw json.RawMessage) bool {

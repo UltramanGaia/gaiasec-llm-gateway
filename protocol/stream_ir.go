@@ -46,11 +46,14 @@ func IRStreamEventsFromResponsesFrame(frame SSEFrame) []IRStreamEvent {
 		}
 	}
 	if item, ok := payload["item"]; ok && item != nil {
+		itemMap := asMap(item)
 		if raw, err := json.Marshal(item); err == nil {
 			base.Item = raw
-			base.Status = firstNonEmpty(base.Status, stringValue(asMap(item)["status"]))
-			base.CallID = firstNonEmpty(base.CallID, stringValue(asMap(item)["call_id"]))
-			base.ItemID = firstNonEmpty(base.ItemID, stringValue(asMap(item)["id"]))
+			base.Status = firstNonEmpty(base.Status, stringValue(itemMap["status"]))
+			base.CallID = firstNonEmpty(base.CallID, stringValue(itemMap["call_id"]))
+			base.ItemID = firstNonEmpty(base.ItemID, stringValue(itemMap["id"]))
+			base.Arguments = firstNonEmpty(base.Arguments, stringValue(itemMap["arguments"]), stringValue(itemMap["input"]))
+			base.Text = firstNonEmpty(base.Text, extractIRSummaryText(itemMap))
 		}
 	}
 
@@ -83,6 +86,20 @@ func IRStreamEventsFromResponsesFrame(frame SSEFrame) []IRStreamEvent {
 	}
 
 	return []IRStreamEvent{base}
+}
+
+func extractIRSummaryText(item map[string]interface{}) string {
+	summary, _ := item["summary"].([]interface{})
+	for _, raw := range summary {
+		part, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if text := stringValue(part["text"]); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 // IRStreamEventsFromChatChunk decodes a chat.completion.chunk payload into IR events.
@@ -314,6 +331,8 @@ func IRStreamEventsFromAnthropicFrame(frame SSEFrame) []IRStreamEvent {
 
 func normalizeResponsesIRStreamEventType(eventType string, payload map[string]interface{}) string {
 	switch eventType {
+	case "response.output_text.delta":
+		return "output_text.delta"
 	case "response.reasoning.delta":
 		return "reasoning.delta"
 	case "response.annotation.added":

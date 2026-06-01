@@ -74,6 +74,32 @@ func TestBuildOpenAIStreamLogResponseIncludesToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIStreamLogResponseInfersToolCallsFinishWithoutFinalChunk(t *testing.T) {
+	rawStream := strings.Join([]string{
+		`data: {"id":"chatcmpl-tool-done-only","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"chatcmpl-tool-done-only","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"hello\"}"}}]}}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	result, err := buildOpenAIStreamLogResponse(rawStream)
+	if err != nil {
+		t.Fatalf("buildOpenAIStreamLogResponse returned error: %v", err)
+	}
+
+	var payload struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(result.ResponseJSON), &payload); err != nil {
+		t.Fatalf("unmarshal response JSON: %v", err)
+	}
+	if len(payload.Choices) != 1 || payload.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("expected inferred finish reason tool_calls, got %+v", payload.Choices)
+	}
+}
+
 func TestBuildOpenAIStreamLogResponseIncludesRefusal(t *testing.T) {
 	rawStream := strings.Join([]string{
 		`data: {"id":"chatcmpl-refusal","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
@@ -226,5 +252,83 @@ func TestAnthropicFrameHasOutputTokenDetectsRicherContentBlockStart(t *testing.T
 	}
 	if !anthropicFrameHasOutputToken(frame) {
 		t.Fatal("expected richer anthropic content_block_start to count as token")
+	}
+}
+
+func TestAnthropicFrameHasOutputTokenDetectsThinkingStartWithText(t *testing.T) {
+	frame := protocol.SSEFrame{
+		Event: "content_block_start",
+		Data:  `{"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"think step","signature":""}}`,
+	}
+	if !anthropicFrameHasOutputToken(frame) {
+		t.Fatal("expected thinking start with text to count as token")
+	}
+}
+
+func TestResponsesEventHasOutputTokenDetectsRicherEvents(t *testing.T) {
+	cases := []protocol.ResponsesStreamEvent{
+		{Event: "response.reasoning.delta"},
+		{Event: "response.annotation.added"},
+		{Event: "response.refusal.done"},
+		{Event: "response.audio.done"},
+		{Event: "response.function_call_arguments.done"},
+	}
+	for _, event := range cases {
+		if !responsesEventHasOutputToken(event) {
+			t.Fatalf("expected %s to count as output token", event.Event)
+		}
+	}
+}
+
+func TestResponsesEventHasOutputTokenDetectsOutputItemWithArgumentsOrSummary(t *testing.T) {
+	cases := []protocol.ResponsesStreamEvent{
+		{
+			Event: "response.output_item.added",
+			Data: map[string]interface{}{
+				"item": map[string]interface{}{
+					"type":      "function_call",
+					"arguments": `{"q":"hello"}`,
+				},
+			},
+		},
+		{
+			Event: "response.output_item.done",
+			Data: map[string]interface{}{
+				"item": map[string]interface{}{
+					"type": "reasoning",
+					"summary": []interface{}{
+						map[string]interface{}{"type": "summary_text", "text": "think step"},
+					},
+				},
+			},
+		},
+	}
+	for _, event := range cases {
+		if !responsesEventHasOutputToken(event) {
+			t.Fatalf("expected %s with payload to count as output token", event.Event)
+		}
+	}
+}
+
+func TestResponsesEventsHasOutputTokenSkipsRoleOnlyAndDetectsRealOutput(t *testing.T) {
+	roleOnly := []protocol.ResponsesStreamEvent{
+		{
+			Event: "response.output_item.added",
+			Data: map[string]interface{}{
+				"item": map[string]interface{}{
+					"type":   "message",
+					"role":   "assistant",
+					"status": "in_progress",
+				},
+			},
+		},
+	}
+	if responsesEventsHasOutputToken(roleOnly) {
+		t.Fatal("expected role-only responses events not to count as output token")
+	}
+
+	withOutput := append(roleOnly, protocol.ResponsesStreamEvent{Event: "response.reasoning.delta"})
+	if !responsesEventsHasOutputToken(withOutput) {
+		t.Fatal("expected reasoning delta to count as output token")
 	}
 }

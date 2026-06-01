@@ -104,6 +104,20 @@ func TestGetLogsReturnsSummaryWithoutLargeBodies(t *testing.T) {
 	if !log.Semantic.HasRefusal || !log.Semantic.HasAudio || log.Semantic.AnnotationCount != 1 {
 		t.Fatalf("expected refusal/audio/annotations in semantic summary, got %+v", log.Semantic)
 	}
+	if log.Semantic.ReasoningSummary != "" {
+		t.Fatalf("expected plain assistant output_text not to populate reasoning summary, got %+v", log.Semantic)
+	}
+}
+
+func TestResponsesSemanticSummaryUsesReasoningItemNotMessageText(t *testing.T) {
+	summary := summarizeResponseSemantics(`{"id":"resp_reasoning","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"final answer"}]},{"type":"reasoning","summary":[{"type":"summary_text","text":"private reasoning"}]}]}`)
+
+	if summary.Protocol != "responses" {
+		t.Fatalf("expected responses protocol, got %+v", summary)
+	}
+	if summary.ReasoningSummary != "private reasoning" {
+		t.Fatalf("expected reasoning summary from reasoning item, got %+v", summary)
+	}
 }
 
 func TestGetLogDetailReturnsSemanticSummary(t *testing.T) {
@@ -357,6 +371,111 @@ func TestProcessStreamResponseReconstructsResponsesPayloadWithoutCompletedEvent(
 	if !strings.Contains(aggregated, `"input":"ls -la"`) && !strings.Contains(aggregated, `"arguments":"ls -la"`) {
 		t.Fatalf("expected reconstructed tool arguments, got %s", aggregated)
 	}
+	if !strings.Contains(aggregated, `"status":"completed"`) {
+		t.Fatalf("expected reconstructed response status completed, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"type":"custom_tool_call"`) || !strings.Contains(aggregated, `"status":"completed"`) {
+		t.Fatalf("expected reconstructed output item status completed, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseReconstructsResponsesPayloadFromArgumentsDoneWithoutCompletedEvent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reconstruct_done","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"in_progress"}}`,
+		"",
+		"event: response.function_call_arguments.done",
+		`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"q\":\"hello\"}"}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"object":"response"`) || !strings.Contains(aggregated, `"type":"function_call"`) {
+		t.Fatalf("expected reconstructed responses payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"arguments":"{\"q\":\"hello\"}"`) {
+		t.Fatalf("expected reconstructed tool arguments from arguments.done, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePrefersFinalArgumentsDoneOverPartialDelta(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reconstruct_done_final","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"lookup","status":"in_progress"}}`,
+		"",
+		"event: response.function_call_arguments.delta",
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"q\":\"he"}`,
+		"",
+		"event: response.function_call_arguments.done",
+		`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"q\":\"hello\"}"}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"arguments":"{\"q\":\"hello\"}"`) {
+		t.Fatalf("expected final arguments.done to override partial delta, got %s", aggregated)
+	}
+	if strings.Contains(aggregated, `"arguments":"{\"q\":\"he"`) {
+		t.Fatalf("expected partial delta not to survive after arguments.done, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseReconstructsResponsesFileSearchPayloadWithoutCompletedEvent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_file_search","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"file_search_call","id":"fs_1","call_id":"fs_1","name":"file_search","status":"in_progress"}}`,
+		"",
+		"event: response.function_call_arguments.delta",
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"search docs"}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"object":"response"`) || !strings.Contains(aggregated, `"type":"file_search_call"`) {
+		t.Fatalf("expected reconstructed file_search_call payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"input":"search docs"`) {
+		t.Fatalf("expected reconstructed file_search input, got %s", aggregated)
+	}
 }
 
 func TestProcessStreamResponseReconstructsResponsesRicherMessageWithoutCompletedEvent(t *testing.T) {
@@ -409,6 +528,214 @@ func TestProcessStreamResponseReconstructsResponsesRicherMessageWithoutCompleted
 	}
 }
 
+func TestProcessStreamResponseReconstructsResponsesStartOnlyMessageOutputTextWithoutCompletedEvent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_start_only","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[{"type":"output_text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]},{"type":"refusal","refusal":"blocked"},{"type":"output_audio","audio":{"id":"aud_1","format":"wav"}}]}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"output_text":"hello"`) {
+		t.Fatalf("expected start-only message content to populate output_text, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePreservesStartOnlyRicherPartsWhenLaterTextDeltaArrives(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_mixed_reconstruct","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[{"type":"output_text","text":""},{"type":"output_audio","audio":{"id":"aud_1","format":"wav"}}]}}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"text":"hello"`) {
+		t.Fatalf("expected reconstructed text, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"type":"output_audio"`) || !strings.Contains(aggregated, `"id":"aud_1"`) {
+		t.Fatalf("expected start-only richer part preserved, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseReconstructsMultipleOutputTextPartsIndependently(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_multi_text","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress"}}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":1,"part":{"type":"output_text","text":""}}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","output_index":0,"content_index":1,"delta":"world"}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"content":[{"text":"hello","type":"output_text"},{"text":"world","type":"output_text"}]`) &&
+		!strings.Contains(aggregated, `"content":[{"type":"output_text","text":"hello"},{"type":"output_text","text":"world"}]`) {
+		t.Fatalf("expected independent output_text parts, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePlacesAnnotationsOnCorrectContentPart(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_annotations_parts","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress"}}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hello"}}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":1,"part":{"type":"output_text","text":"world"}}`,
+		"",
+		"event: response.annotation.added",
+		`data: {"type":"response.annotation.added","output_index":0,"content_index":1,"annotations":[{"type":"url_citation","title":"doc"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"content":[{"text":"hello","type":"output_text"},{"annotations":[{"title":"doc","type":"url_citation"}],"text":"world","type":"output_text"}]`) &&
+		!strings.Contains(aggregated, `"content":[{"type":"output_text","text":"hello"},{"type":"output_text","text":"world","annotations":[{"type":"url_citation","title":"doc"}]}]`) {
+		t.Fatalf("expected annotation on second content part, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePlacesRicherPartsOnCorrectContentIndexes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_richer_parts","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress"}}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hello"}}`,
+		"",
+		"event: response.content_part.added",
+		`data: {"type":"response.content_part.added","output_index":0,"content_index":1,"part":{"type":"output_text","text":"world"}}`,
+		"",
+		"event: response.annotation.added",
+		`data: {"type":"response.annotation.added","output_index":0,"content_index":1,"annotations":[{"type":"url_citation","title":"doc"}]}`,
+		"",
+		"event: response.refusal.done",
+		`data: {"type":"response.refusal.done","output_index":0,"content_index":2,"refusal":"blocked"}`,
+		"",
+		"event: response.audio.done",
+		`data: {"type":"response.audio.done","output_index":0,"content_index":3,"audio":{"id":"aud_1","format":"wav"}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"content":[{"text":"hello","type":"output_text"},{"annotations":[{"title":"doc","type":"url_citation"}],"text":"world","type":"output_text"},{"refusal":"blocked","type":"refusal"},{"audio":{"format":"wav","id":"aud_1"},"type":"output_audio"}]`) &&
+		!strings.Contains(aggregated, `"content":[{"type":"output_text","text":"hello"},{"type":"output_text","text":"world","annotations":[{"type":"url_citation","title":"doc"}]},{"type":"refusal","refusal":"blocked"},{"type":"output_audio","audio":{"id":"aud_1","format":"wav"}}]`) {
+		t.Fatalf("expected richer parts on correct content indexes, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseReconstructsResponsesReasoningSummaryWithoutCompletedEvent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_reasoning_reconstruct","model":"resp-backend","status":"in_progress"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"in_progress","summary":[{"type":"summary_text","text":""}]}}`,
+		"",
+		"event: response.reasoning.delta",
+		`data: {"type":"response.reasoning.delta","output_index":50,"item_id":"rs_1","delta":"think step"}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"reasoning"`) {
+		t.Fatalf("expected reconstructed reasoning item, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"summary":[{"text":"think step","type":"summary_text"}]`) &&
+		!strings.Contains(aggregated, `"summary":[{"type":"summary_text","text":"think step"}]`) {
+		t.Fatalf("expected reconstructed reasoning summary, got %s", aggregated)
+	}
+}
+
 func TestProcessStreamResponsePreservesAnthropicCompletedPayload(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -448,6 +775,183 @@ func TestProcessStreamResponsePreservesAnthropicCompletedPayload(t *testing.T) {
 	}
 	if !strings.Contains(aggregated, `"stop_reason":"tool_use"`) {
 		t.Fatalf("expected anthropic stop_reason preserved, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseInfersAnthropicStopReasonFromMessageStopWithoutDelta(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_stop_only","type":"message","role":"assistant","model":"claude"}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{}}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"type":"tool_use"`) {
+		t.Fatalf("expected anthropic replay payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected anthropic stop_reason inferred from message_stop, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePreservesAnthropicToolUseStartInput(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_tool_start","type":"message","role":"assistant","model":"claude"}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"hello"}}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"type":"tool_use"`) {
+		t.Fatalf("expected anthropic replay payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"input":{"q":"hello"}`) {
+		t.Fatalf("expected anthropic replay to preserve tool_use start input, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseInfersAnthropicStopReasonFromTruncatedToolUseReplay(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_tool_truncated","type":"message","role":"assistant","model":"claude"}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"hello"}}}`,
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"type":"tool_use"`) {
+		t.Fatalf("expected anthropic replay payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected anthropic stop_reason inferred from truncated replay, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponseReconstructsAnthropicEmptyMessageReplay(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_empty","type":"message","role":"assistant","model":"claude"}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":3,"output_tokens":0}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"content":[]`) {
+		t.Fatalf("expected anthropic empty message replay payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"stop_reason":"end_turn"`) {
+		t.Fatalf("expected anthropic empty message stop_reason preserved, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePreservesAnthropicThinkingStartText(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_reasoning_start","type":"message","role":"assistant","model":"claude"}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"think step","signature":""}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"type":"thinking"`) {
+		t.Fatalf("expected anthropic replay payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"thinking":"think step"`) {
+		t.Fatalf("expected anthropic replay to preserve thinking start text, got %s", aggregated)
+	}
+}
+
+func TestProcessStreamResponsePreservesAnthropicThinkingStartTextWithoutDelta(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	handler := NewLogHandler(db)
+
+	rawStream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"id":"msg_reasoning_start_only","type":"message","role":"assistant","model":"claude"}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":"think step","signature":""}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+		"",
+	}, "\n")
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(rawStream))}
+	aggregated := handler.processStreamResponse(resp)
+
+	if !strings.Contains(aggregated, `"type":"message"`) || !strings.Contains(aggregated, `"type":"thinking"`) {
+		t.Fatalf("expected anthropic replay payload, got %s", aggregated)
+	}
+	if !strings.Contains(aggregated, `"thinking":"think step"`) {
+		t.Fatalf("expected anthropic replay to preserve thinking start-only text, got %s", aggregated)
 	}
 }
 

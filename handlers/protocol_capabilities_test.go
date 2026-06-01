@@ -45,6 +45,21 @@ func TestDeriveCapabilityRequirementsDetectsPreviousResponseID(t *testing.T) {
 	}
 }
 
+func TestDeriveCapabilityRequirementsDetectsResponsesOnlyFields(t *testing.T) {
+	rawBody := map[string]json.RawMessage{
+		"include":      json.RawMessage(`["reasoning.encrypted_content"]`),
+		"store":        json.RawMessage(`true`),
+		"background":   json.RawMessage(`false`),
+		"conversation": json.RawMessage(`{"id":"conv_1"}`),
+		"prompt":       json.RawMessage(`{"id":"pmpt_1"}`),
+	}
+
+	reqs := deriveCapabilityRequirements(protocol.InboundProtocolResponses, rawBody)
+	if !reqs.Include || !reqs.Store || !reqs.Background || !reqs.Conversation || !reqs.Prompt {
+		t.Fatalf("expected responses-only fields detected, got %+v", reqs)
+	}
+}
+
 func TestValidateModelCapabilitiesRejectsResponsesBuiltinsForChatUpstream(t *testing.T) {
 	config := models.ModelConfig{
 		ModelName:         "chat-backend",
@@ -114,5 +129,29 @@ func TestValidateModelCapabilitiesRejectsPreviousResponseIDForNonResponsesUpstre
 	})
 	if err == nil || !strings.Contains(err.Error(), "previous_response_id") {
 		t.Fatalf("expected previous_response_id rejection, got %v", err)
+	}
+}
+
+func TestValidateModelCapabilitiesRejectsResponsesOnlyFieldsForNonResponsesUpstream(t *testing.T) {
+	config := models.ModelConfig{
+		ModelName:      "chat-backend",
+		UpstreamType:   models.UpstreamTypeOpenAIChat,
+		SupportsStream: true,
+	}
+
+	err := validateModelCapabilities(config, capabilityRequirements{
+		Include:      true,
+		Store:        true,
+		Background:   true,
+		Conversation: true,
+		Prompt:       true,
+	})
+	if err == nil ||
+		!strings.Contains(err.Error(), "include") ||
+		!strings.Contains(err.Error(), "store") ||
+		!strings.Contains(err.Error(), "background") ||
+		!strings.Contains(err.Error(), "conversation") ||
+		!strings.Contains(err.Error(), "prompt") {
+		t.Fatalf("expected responses-only field rejection, got %v", err)
 	}
 }

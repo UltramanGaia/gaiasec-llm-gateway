@@ -51,7 +51,10 @@
 - 已有最小 `Responses/Chat -> IRStreamEvent` 归一化 helper
 - 已有 `Anthropic -> IRStreamEvent` 归一化 helper 与测试
 - `Responses/Anthropic -> IRStreamEvent` 已开始把 `reasoning.* / annotation.added / tool_call.* / audio.*` 等 lifecycle 统一归一化为更稳定的 IR 事件类型，并保留原始 provider event type
+- `response.output_text.delta` 现在也已明确归一化到统一 IR `output_text.delta`
+- `Responses response.output_item.done` 里自带的最终 tool args / reasoning summary 现在也会直接提升到统一 IR 字段，而不只留在 raw item
 - `responses -> chat stream`、`chat -> responses stream`、`responses -> anthropic stream`、`anthropic -> responses stream`、`chat -> anthropic stream`、`anthropic -> chat stream` 主路径已开始消费 IR 事件归一化结果
+- `Responses -> Chat/Anthropic` 的 `output_item.done` 分支现在也已优先消费 IR 提升出的最终 args/summary，而不再主要依赖 raw item
 - chat-like stream 聚合/日志辅助逻辑也已开始消费 IR 事件归一化结果
 - Responses replay fallback 聚合也已开始优先消费 `IRStreamEventsFromResponsesFrame`
 - `buildOpenAIStreamLogResponse` 里的 provider-specific chunk struct 解析也已收敛到通用 map + IR 事件聚合
@@ -81,6 +84,8 @@
 - built-in Responses tools 已可保留 raw payload
 - unsupported cross-protocol capability 已有前置拒绝
 - `previous_response_id` 对非 Responses upstream 也已有前置拒绝，且 handler 级已验证不会静默丢语义
+- `prompt_cache_*` 对非 Responses upstream 也已有前置拒绝，且 handler 级已验证不会静默丢语义
+- `include/store/background/conversation/prompt` 对非 Responses upstream 也已有前置拒绝，且 handler 级已验证不会静默丢语义
 
 证据：
 
@@ -135,6 +140,27 @@
 - audio stream 已补 Chat <-> Responses 与 stream log 聚合主路径
 - Anthropic `thinking` -> Responses reasoning stream 已补主路径
 - richer `*_call` lifecycle 已补一部分
+- Anthropic `tool_use` -> Responses `function_call` stream 现在已有 `output_item.added` / `arguments.delta` / `arguments.done` / `output_item.done` 完整生命周期，并会累积参数到 done item
+- Anthropic `tool_use` 如果在 `content_block_start` 里就已携带完整 `input`，现在也能直接进入 Chat/Responses stream，而不再要求后续 `input_json_delta`
+- `tool_use start-only input` 在 Anthropic -> Responses 路径下不再过早重复发 `arguments.done`；现在是 added 带参数、stop 时只收尾一次
+- Anthropic `thinking` 如果在 `content_block_start` 里就已携带非空文本，现在也能直接进入 Chat/Responses stream，而不再要求后续 `thinking_delta`
+- Anthropic `thinking start-only text` 在 Responses 路径下，`output_item.added.summary` 现在也会和后续 reasoning 文本保持一致，不再是空 summary
+- Responses `reasoning/tool output_item.done` -> Anthropic `content_block_stop` 也已有更贴近 provider 语义的即时收尾，不再只依赖 `response.completed` 统一 flush
+- Responses `function_call_arguments.done` -> Chat stream 也已不再只是 finish 辅助信号，而会实际发出最终 `tool_calls[].function.arguments` chunk
+- Responses `function_call_arguments.done` -> Anthropic stream 现在也会在 only-done 场景下发出最终 `input_json_delta`，不再要求先见到完整 delta
+- Responses `output_item.added` 自带的初始 tool args 现在也能直接进入 Chat `tool_calls[].function.arguments`
+- Responses `output_item.added` 自带的初始 reasoning summary 现在也能直接进入 Chat `reasoning_content`
+- Responses `output_item.added` 自带的初始 tool args 现在也能直接进入 Anthropic `tool_use input`
+- Responses `output_item.added` 自带的初始 reasoning summary 现在也能直接进入 Anthropic `thinking` block
+- Responses `output_item.done` 中自带的最终 tool args，现在也已能直接进入 Chat `tool_calls[].function.arguments` 与 Anthropic `input_json_delta`
+- Responses `output_item.done` 中自带的最终 reasoning summary，现在也已能直接进入 Chat `reasoning_content` 与 Anthropic `thinking` stream
+- Responses `output_item.added.item.content` 中自带的 start-only `output_text/annotations/refusal/audio`，现在也能直接进入 Chat/Anthropic stream，而不再要求后续 delta/content_part
+- Responses -> Chat 在裸 `[DONE]` 且缺少 `response.completed` 时，现在也会补最终 finish chunk，不再静默结束
+- Responses -> Chat 的 `[DONE]` flush 现在也会保留已缓存 usage，不再只补 finish chunk
+- Anthropic -> Chat 在 `message_stop` 且缺少 `message_delta` 时，现在也会补最终 finish chunk，不再静默结束
+- Anthropic -> Responses 在 `message_stop` 且缺少 `message_delta` 时，现在也会补最终 `output_item.done` / `response.completed` 生命周期
+- Responses -> Anthropic 在裸 `[DONE]` 且缺少 `response.completed` 时，现在也会根据 tool block 推断 `stop_reason=tool_use`
+- Anthropic -> Responses handler 侧也已避免在已有 `response.completed` 时重复补写 completed
 - `Anthropic richer text-block stream (annotations/refusal/audio) -> Chat/Responses` 已有主路径证据
 - `Responses/Chat richer text stream (annotations/refusal/audio) -> Anthropic` 也已有 protocol + handler 主路径证据
 
@@ -188,17 +214,39 @@
 - `/api/request-logs` 已有 richer semantic summary
 - 可见 `tool subtype/reasoning/refusal/annotation_count/audio`
 - `Anthropic` richer content 的 `annotations/refusal/audio` 也已进入 semantic summary
+- Responses semantic summary 的 `ReasoningSummary` 现在只来自真正的 `reasoning/compaction` item，不再误把普通 assistant `output_text` 当作 reasoning
 - stream 日志聚合已保留 `reasoning/tool_calls/refusal/audio`
+- chat-like stream 日志聚合在 only-`[DONE]` 且缺少最终 finish chunk 时，也已能根据 tool call 轨迹推断 `finish_reason=tool_calls`
+- `Anthropic -> Responses` stream 的 richer `reasoning/annotation/refusal/audio/arguments.done` 事件现在也会被计入输出 token 观测
+- `Anthropic -> Responses` stream 中携带实际输出的 `response.output_item.added/done`（如 start-only tool args / reasoning summary）现在也会计入输出 token 观测
+- `Chat -> Responses` stream 现在也不再把 role-only / metadata-only chunk 误计为输出 token，而是只在转换后事件真正携带输出时记 token
+- `Anthropic -> Chat` 的 start-only `thinking` 文本现在也会计入输出 token 观测
 - richer same-protocol replay 已有基础验证证据
 - replay 的 chat-like stream 聚合已可保留 `reasoning/refusal/audio/annotations`
 - replay 的 Responses stream 已可直接保留 `response.completed` 完整 payload
 - replay 的 Anthropic stream 已可聚合为 anthropic message-like payload，并有 richer content `annotations/refusal/audio` 保留证据
 - replay 的 Responses stream 在缺少 `response.completed` 时已不只重建 text/tool args，也能重建 richer message content 的 `annotations/refusal/audio`
 - Responses replay fallback 的 `output_item/content_part` 也已开始优先消费 IR item/part
+- Responses replay fallback 对 `file_search_call` 这类 built-in tool 也已补上 `input/arguments` 重建证据
+- Responses replay fallback 对 only-`function_call_arguments.done` 的 `function_call` 也已补上最终 `arguments` 重建证据
+- Responses replay fallback 在同时出现 partial `arguments.delta` 与最终 `arguments.done` 时，也已改为优先保留最终完整参数
+- Responses replay fallback 对 only-`response.reasoning.delta` 的 `reasoning` item 也已补上 summary 重建证据
+- Responses replay fallback 在缺少 `response.completed` 时，顶层 `status` 也已收敛为 `completed`
+- Responses replay fallback 在缺少 `response.output_item.done` 时，重建出的 item `status` 也已收敛为 `completed`
+- Responses replay fallback 对 only-`response.output_item.added.item.content` 的 start-only message 现在也会补上顶层 `output_text`
+- Responses replay fallback 在 start-only richer message content 后又收到后续 text delta 时，现在也不再覆盖丢失既有 richer parts，且会把 text 正确回填到已存在 part
+- Responses replay fallback 现在也按 `content_index` 维度独立重建多个 `output_text` part，不再把同一 message 的多个 text part 串错
+- Responses replay fallback 现在也会按 `content_index` 正确落位 `response.annotation.added`，不再默认挂到第一个 text part
+- Responses replay fallback 对同一 message 的 `output_text/annotation/refusal/audio` 多 part 组合现在也已有更强的独立落位证据
 - Anthropic replay 聚合也已开始优先消费 `IRStreamEventsFromAnthropicFrame`
 - Anthropic replay 的 delta 聚合也已开始优先消费 IR delta 事件，而不只依赖 raw `delta.type`
 - Anthropic replay 的 `content_block_start` 也已优先消费 IR item/block，而不只依赖 raw block payload
 - Anthropic replay 的 `message_start` 元数据也已优先消费 IR `item_id/usage`
+- Anthropic replay 在 only-`message_stop` 且缺少 `message_delta` 时，也已补上 `stop_reason` 推断
+- Anthropic replay 对 `tool_use start-only input` 现在也已有明确保留证据
+- Anthropic replay 在缺少 `message_delta/message_stop` 的截断 tool_use 场景下，也已补上 `stop_reason` 兜底推断
+- Anthropic replay 现在也能重建合法的空 assistant message（`content: []`），不再因为无 content blocks 直接失败
+- Anthropic replay 对 `thinking start-only text` 现在也已有明确保留证据
 
 证据：
 
@@ -239,11 +287,13 @@
 - [reports/2026-06-01-gateway-previous-response-tool-stream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-tool-stream-smoke.md:1)
 - [reports/2026-06-01-gateway-previous-response-responses-upstream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-responses-upstream-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-followup-matrix.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-followup-matrix.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-tool-stream-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-tool-stream-followup-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-followup-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-include-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-include-followup-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md:1)
@@ -260,8 +310,9 @@
 - real-upstream smoke 已覆盖三入口的基础 non-stream/stream 主路径、chat/responses structured output、responses `previous_response_id` non-stream/stream follow-up、responses `previous_response_id + tool` non-stream/stream follow-up、tool-path（含 stream），并对 vision/file 给出真实结果；最新 `max6` bundle 已全量实跑通过
 - 但在当前实现真正允许的 `openai_responses` upstream 路由下，专用 real-smoke 已证明：baseline `/v1/responses` non-stream/stream 能通过，而 `previous_response_id` 的四类 follow-up 变体都会稳定分类为 `failed_upstream`，当前上游返回 `404 not found`
 - 第二个模型样本 `gpt-5.2` 的专用 `openai_responses` real-smoke 也已补上，证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
-- `gpt-5.2` 的专用 real-smoke 还补出了一条更强的 richer 多轮成功案例：`previous_response_id + structured output` 在 non-stream / stream 都可通过
-- `gpt-5.2` 的专用 real-smoke 还补出了 `previous_response_id + tool + stream` 的真实成功案例
+- `gpt-5.2` 的 richer follow-up 结果现在也已收束成一份单独矩阵报告，便于整体判断其多轮能力边界
+- `gpt-5.2` 的专用 real-smoke 还补出了多条 richer 多轮成功案例：`previous_response_id + tool + stream`、`previous_response_id + structured output`（non-stream / stream）均可通过
+- `gpt-5.2` 的专用 real-smoke 还补出了 `previous_response_id + include` 的真实成功案例
 - `gpt-5.2` 的专用 real-smoke 还补出了 `prompt_cache_key/prompt_cache_retention` 的真实成功案例
 - `gpt-5.2` 的专用 real-smoke 也补出了一条多轮请求语义限制案例：`previous_response_id + prompt_cache_*` 当前会被上游拒绝
 - 第三个模型样本 `gpt-5.3-codex` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化

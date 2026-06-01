@@ -18,7 +18,7 @@ Upstream:
 Artifacts:
 
 ```text
-/tmp/gateway-responses-upstream-smoke-gpt52-structured2-20260601
+/tmp/gateway-responses-upstream-smoke-gpt52-stable-20260601
 ```
 
 Driver:
@@ -34,11 +34,16 @@ Summary:
 ```json
 {
   "responses_baseline_nonstream": "passed",
-  "responses_baseline_stream": "passed",
+  "responses_baseline_stream": "failed_upstream",
   "responses_previous_response_nonstream": "passed",
   "responses_previous_response_stream": "passed",
   "responses_previous_response_tool_nonstream": "passed",
-  "responses_previous_response_tool_stream": "failed_upstream"
+  "responses_previous_response_tool_stream": "passed",
+  "responses_previous_response_structured_nonstream": "passed",
+  "responses_previous_response_structured_stream": "passed",
+  "responses_prompt_cache_nonstream": "passed",
+  "responses_previous_response_prompt_cache_nonstream": "failed_upstream",
+  "responses_previous_response_prompt_cache_stream": "failed_upstream"
 }
 ```
 
@@ -47,22 +52,27 @@ Summary:
 ### Real-upstream passes
 
 - baseline `/v1/responses` non-stream succeeds
-- baseline `/v1/responses` stream succeeds
 - `previous_response_id` non-stream follow-up succeeds
 - `previous_response_id` stream follow-up succeeds
 - `previous_response_id + tool` non-stream follow-up succeeds
+- `previous_response_id + tool` stream follow-up succeeds
+- `previous_response_id + structured output` non-stream follow-up succeeds
+- `previous_response_id + structured output` stream follow-up succeeds
+- `prompt_cache_*` non-stream succeeds
 
 ### Real-upstream classified limitation
 
-- `previous_response_id + tool` stream follow-up is classified as `failed_upstream`
+- baseline `/v1/responses` stream is classified as `failed_upstream`
+- `previous_response_id + prompt_cache_*` non-stream follow-up is classified as `failed_upstream`
+- `previous_response_id + prompt_cache_*` stream follow-up is classified as `failed_upstream`
 
 Observed upstream/provider error on the failed follow-up:
 
-- `401 Unauthorized`
-- provider message indicated `Invalid token`
+- `401 Unauthorized` on one baseline stream request
+- `Unsupported parameter: prompt_cache_retention` on prompt-cache follow-up
 
 ## Conclusion
 
-This provides a second real model sample on the supported `openai_responses` route.
+This provides a second real model sample on the supported `openai_responses` route, with a broader richer follow-up matrix than the earlier single-scenario reports.
 
-It shows that current behavior is model/provider dependent: unlike `MiniMax/MiniMax-M2.5`, model `gpt-5.2` can complete plain `previous_response_id` non-stream and stream follow-up successfully, as well as tool follow-up in non-stream mode, while the tool-stream follow-up still fails due to an upstream/provider authorization issue.
+It shows that current behavior is model/provider dependent: unlike several other samples, model `gpt-5.2` can complete multiple richer `previous_response_id` follow-up paths successfully, including tool-stream and structured-output follow-up, while prompt-cache follow-up remains limited by upstream/provider behavior.

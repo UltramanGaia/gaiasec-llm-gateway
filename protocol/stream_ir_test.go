@@ -39,6 +39,18 @@ func TestIRStreamEventsFromResponsesFrameSupportsReasoningDelta(t *testing.T) {
 	}
 }
 
+func TestIRStreamEventsFromResponsesFrameSupportsOutputTextDelta(t *testing.T) {
+	frame := SSEFrame{
+		Event: "response.output_text.delta",
+		Data:  `{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}`,
+	}
+
+	events := IRStreamEventsFromResponsesFrame(frame)
+	if len(events) != 1 || events[0].Type != "output_text.delta" || events[0].Delta != "hello" {
+		t.Fatalf("expected output text delta IR event, got %+v", events)
+	}
+}
+
 func TestIRStreamEventsFromResponsesFrameSupportsAnnotationAdded(t *testing.T) {
 	frame := SSEFrame{
 		Event: "response.annotation.added",
@@ -76,6 +88,30 @@ func TestIRStreamEventsFromResponsesFrameNormalizesToolLifecycle(t *testing.T) {
 	events := IRStreamEventsFromResponsesFrame(frame)
 	if len(events) != 1 || events[0].Type != "tool_call.start" || events[0].CallID != "call_1" || events[0].ItemID != "call_1" {
 		t.Fatalf("expected normalized tool_call.start event, got %+v", events)
+	}
+}
+
+func TestIRStreamEventsFromResponsesFramePromotesToolArgumentsFromOutputItemDone(t *testing.T) {
+	frame := SSEFrame{
+		Event: "response.output_item.done",
+		Data:  `{"type":"response.output_item.done","output_index":5,"item":{"type":"function_call","id":"call_1","call_id":"call_1","name":"lookup","status":"completed","arguments":"{\"q\":\"hello\"}"}}`,
+	}
+
+	events := IRStreamEventsFromResponsesFrame(frame)
+	if len(events) != 1 || events[0].Type != "tool_call.done" || events[0].Arguments != `{"q":"hello"}` {
+		t.Fatalf("expected output_item.done arguments promoted into IR, got %+v", events)
+	}
+}
+
+func TestIRStreamEventsFromResponsesFramePromotesReasoningSummaryFromOutputItemDone(t *testing.T) {
+	frame := SSEFrame{
+		Event: "response.output_item.done",
+		Data:  `{"type":"response.output_item.done","output_index":50,"item":{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"think step"}]}}`,
+	}
+
+	events := IRStreamEventsFromResponsesFrame(frame)
+	if len(events) != 1 || events[0].Type != "reasoning.done" || events[0].Text != "think step" {
+		t.Fatalf("expected output_item.done reasoning summary promoted into IR, got %+v", events)
 	}
 }
 
