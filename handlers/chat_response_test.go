@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"llm-gateway/protocol"
 )
 
 func TestBuildOpenAIStreamLogResponseIncludesToolCalls(t *testing.T) {
@@ -72,6 +74,103 @@ func TestBuildOpenAIStreamLogResponseIncludesToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIStreamLogResponseIncludesRefusal(t *testing.T) {
+	rawStream := strings.Join([]string{
+		`data: {"id":"chatcmpl-refusal","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"chatcmpl-refusal","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"refusal":"cannot "}}]}`,
+		`data: {"id":"chatcmpl-refusal","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"refusal":"comply"}}]}`,
+		`data: {"id":"chatcmpl-refusal","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	result, err := buildOpenAIStreamLogResponse(rawStream)
+	if err != nil {
+		t.Fatalf("buildOpenAIStreamLogResponse returned error: %v", err)
+	}
+	if result.RefusalChunks != 2 || result.Refusal != "cannot comply" {
+		t.Fatalf("expected refusal chunks and merged refusal, got %+v", result)
+	}
+
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Refusal string `json:"refusal"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(result.ResponseJSON), &payload); err != nil {
+		t.Fatalf("unmarshal response JSON: %v", err)
+	}
+	if payload.Choices[0].Message.Refusal != "cannot comply" {
+		t.Fatalf("expected refusal to be preserved in aggregated response, got %q", payload.Choices[0].Message.Refusal)
+	}
+}
+
+func TestBuildOpenAIStreamLogResponseIncludesAudio(t *testing.T) {
+	rawStream := strings.Join([]string{
+		`data: {"id":"chatcmpl-audio","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"chatcmpl-audio","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"audio":{"id":"aud_1","format":"wav"}}}]}`,
+		`data: {"id":"chatcmpl-audio","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	result, err := buildOpenAIStreamLogResponse(rawStream)
+	if err != nil {
+		t.Fatalf("buildOpenAIStreamLogResponse returned error: %v", err)
+	}
+	if result.AudioChunks != 1 || result.Audio["id"] != "aud_1" {
+		t.Fatalf("expected audio chunk and aggregated audio payload, got %+v", result)
+	}
+
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Audio map[string]interface{} `json:"audio"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(result.ResponseJSON), &payload); err != nil {
+		t.Fatalf("unmarshal response JSON: %v", err)
+	}
+	if payload.Choices[0].Message.Audio["id"] != "aud_1" {
+		t.Fatalf("expected audio to be preserved in aggregated response, got %+v", payload.Choices[0].Message.Audio)
+	}
+}
+
+func TestBuildOpenAIStreamLogResponseIncludesAnnotations(t *testing.T) {
+	rawStream := strings.Join([]string{
+		`data: {"id":"chatcmpl-annotations","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"chatcmpl-annotations","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"annotations":[{"type":"url_citation","title":"doc"}]}}]}`,
+		`data: {"id":"chatcmpl-annotations","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	result, err := buildOpenAIStreamLogResponse(rawStream)
+	if err != nil {
+		t.Fatalf("buildOpenAIStreamLogResponse returned error: %v", err)
+	}
+	if result.AnnotationCount != 1 {
+		t.Fatalf("expected annotation count 1, got %+v", result)
+	}
+
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Annotations []interface{} `json:"annotations"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(result.ResponseJSON), &payload); err != nil {
+		t.Fatalf("unmarshal response JSON: %v", err)
+	}
+	if len(payload.Choices[0].Message.Annotations) != 1 {
+		t.Fatalf("expected annotations to be preserved in aggregated response, got %+v", payload.Choices[0].Message.Annotations)
+	}
+}
+
 func TestBuildOpenAIStreamLogResponseReturnsEOFForMetadataOnlyStream(t *testing.T) {
 	rawStream := strings.Join([]string{
 		`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"glm-test","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
@@ -96,5 +195,36 @@ func TestLineHasOpenAIStreamTokenDetectsToolCalls(t *testing.T) {
 	line := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`
 	if !lineHasOpenAIStreamToken(line) {
 		t.Fatal("expected tool call chunk to count as stream token")
+	}
+}
+
+func TestLineHasOpenAIStreamTokenDetectsRefusal(t *testing.T) {
+	line := `data: {"choices":[{"index":0,"delta":{"refusal":"blocked"}}]}`
+	if !lineHasOpenAIStreamToken(line) {
+		t.Fatal("expected refusal chunk to count as stream token")
+	}
+}
+
+func TestLineHasOpenAIStreamTokenDetectsAudio(t *testing.T) {
+	line := `data: {"choices":[{"index":0,"delta":{"audio":{"id":"aud_1"}}}]}`
+	if !lineHasOpenAIStreamToken(line) {
+		t.Fatal("expected audio chunk to count as stream token")
+	}
+}
+
+func TestLineHasOpenAIStreamTokenDetectsAnnotations(t *testing.T) {
+	line := `data: {"choices":[{"index":0,"delta":{"annotations":[{"type":"url_citation"}]}}]}`
+	if !lineHasOpenAIStreamToken(line) {
+		t.Fatal("expected annotations chunk to count as stream token")
+	}
+}
+
+func TestAnthropicFrameHasOutputTokenDetectsRicherContentBlockStart(t *testing.T) {
+	frame := protocol.SSEFrame{
+		Event: "content_block_start",
+		Data:  `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello","annotations":[{"type":"url_citation"}],"refusal":"blocked","audio":{"id":"aud_1"}}}`,
+	}
+	if !anthropicFrameHasOutputToken(frame) {
+		t.Fatal("expected richer anthropic content_block_start to count as token")
 	}
 }

@@ -25,6 +25,9 @@ UPSTREAM_BASE_URL="$UPSTREAM_BASE_URL" \
 UPSTREAM_MODEL="$UPSTREAM_MODEL" \
 "$ROOT_DIR/scripts/e2e_gateway_smoke.sh"
 
+echo "==> Running richer mock integration test suite"
+"$ROOT_DIR/scripts/e2e_gateway_rich_mock.sh"
+
 echo "==> Installing Codex profile"
 GATEWAY_URL="$GATEWAY_URL" \
 MODEL_NAME="$CONFIG_NAME" \

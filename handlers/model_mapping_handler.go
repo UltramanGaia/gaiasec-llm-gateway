@@ -40,6 +40,14 @@ type modelConfigResponse struct {
 	SupportsJSONSchema        bool                `json:"supports_json_schema"`
 	SupportsVision            bool                `json:"supports_vision"`
 	SupportsParallelToolCalls bool                `json:"supports_parallel_tool_calls"`
+	SupportsRefusal           bool                `json:"supports_refusal"`
+	SupportsAnnotations       bool                `json:"supports_annotations"`
+	SupportsAudioOutput       bool                `json:"supports_audio_output"`
+	SupportsWebSearch         bool                `json:"supports_web_search"`
+	SupportsMCP               bool                `json:"supports_mcp"`
+	SupportsCodeInterpreter   bool                `json:"supports_code_interpreter"`
+	SupportsImageGeneration   bool                `json:"supports_image_generation"`
+	SupportsPromptCache       bool                `json:"supports_prompt_cache"`
 	CreatedAt                 time.Time           `json:"created_at"`
 	UpdatedAt                 time.Time           `json:"updated_at"`
 	Enabled                   bool                `json:"enabled"`
@@ -70,6 +78,14 @@ func toModelConfigResponse(config models.ModelConfig) modelConfigResponse {
 		SupportsJSONSchema:        config.SupportsJSONSchema,
 		SupportsVision:            config.SupportsVision,
 		SupportsParallelToolCalls: config.SupportsParallelToolCalls,
+		SupportsRefusal:           config.SupportsRefusal,
+		SupportsAnnotations:       config.SupportsAnnotations,
+		SupportsAudioOutput:       config.SupportsAudioOutput,
+		SupportsWebSearch:         config.SupportsWebSearch,
+		SupportsMCP:               config.SupportsMCP,
+		SupportsCodeInterpreter:   config.SupportsCodeInterpreter,
+		SupportsImageGeneration:   config.SupportsImageGeneration,
+		SupportsPromptCache:       config.SupportsPromptCache,
 		CreatedAt:                 config.CreatedAt,
 		UpdatedAt:                 config.UpdatedAt,
 		Enabled:                   config.Enabled,
@@ -424,6 +440,14 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 	config.SupportsJSONSchema = input.SupportsJSONSchema
 	config.SupportsVision = input.SupportsVision
 	config.SupportsParallelToolCalls = input.SupportsParallelToolCalls
+	config.SupportsRefusal = input.SupportsRefusal
+	config.SupportsAnnotations = input.SupportsAnnotations
+	config.SupportsAudioOutput = input.SupportsAudioOutput
+	config.SupportsWebSearch = input.SupportsWebSearch
+	config.SupportsMCP = input.SupportsMCP
+	config.SupportsCodeInterpreter = input.SupportsCodeInterpreter
+	config.SupportsImageGeneration = input.SupportsImageGeneration
+	config.SupportsPromptCache = input.SupportsPromptCache
 	config.Enabled = input.Enabled
 	config.UpdatedAt = time.Now()
 
@@ -443,6 +467,14 @@ func (h *ModelConfigHandler) ModifyModelConfig(w http.ResponseWriter, r *http.Re
 		"supports_json_schema":         config.SupportsJSONSchema,
 		"supports_vision":              config.SupportsVision,
 		"supports_parallel_tool_calls": config.SupportsParallelToolCalls,
+		"supports_refusal":             config.SupportsRefusal,
+		"supports_annotations":         config.SupportsAnnotations,
+		"supports_audio_output":        config.SupportsAudioOutput,
+		"supports_web_search":          config.SupportsWebSearch,
+		"supports_mcp":                 config.SupportsMCP,
+		"supports_code_interpreter":    config.SupportsCodeInterpreter,
+		"supports_image_generation":    config.SupportsImageGeneration,
+		"supports_prompt_cache":        config.SupportsPromptCache,
 		"enabled":                      config.Enabled,
 		"updated_at":                   config.UpdatedAt,
 	}

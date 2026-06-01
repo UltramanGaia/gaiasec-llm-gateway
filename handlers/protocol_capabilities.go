@@ -15,7 +15,15 @@ type capabilityRequirements struct {
 	Reasoning         bool
 	JSONSchema        bool
 	Vision            bool
+	AudioOutput       bool
+	PreviousResponse  bool
 	ParallelToolCalls bool
+	WebSearch         bool
+	MCP               bool
+	CodeInterpreter   bool
+	ImageGeneration   bool
+	PromptCache       bool
+	ResponsesTools    bool
 }
 
 func deriveCapabilityRequirements(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) capabilityRequirements {
@@ -25,7 +33,15 @@ func deriveCapabilityRequirements(inbound protocol.InboundProtocol, rawBody map[
 	reqs.Reasoning = requestUsesReasoning(inbound, rawBody)
 	reqs.JSONSchema = requestUsesJSONSchema(inbound, rawBody)
 	reqs.Vision = requestUsesVision(inbound, rawBody)
+	reqs.AudioOutput = requestUsesAudioOutput(inbound, rawBody)
+	reqs.PreviousResponse = requestUsesPreviousResponseID(inbound, rawBody)
 	reqs.ParallelToolCalls = requestUsesParallelToolCalls(inbound, rawBody)
+	reqs.WebSearch = requestUsesBuiltInToolType(rawBody, "web_search", "web_search_preview")
+	reqs.MCP = requestUsesBuiltInToolType(rawBody, "mcp")
+	reqs.CodeInterpreter = requestUsesBuiltInToolType(rawBody, "code_interpreter")
+	reqs.ImageGeneration = requestUsesBuiltInToolType(rawBody, "image_generation")
+	reqs.PromptCache = requestUsesPromptCache(inbound, rawBody)
+	reqs.ResponsesTools = requestUsesResponsesBuiltinTools(rawBody)
 	return reqs
 }
 
@@ -45,6 +61,30 @@ func validateModelCapabilities(config models.ModelConfig, reqs capabilityRequire
 	}
 	if reqs.Vision && !config.SupportsVision {
 		unsupported = append(unsupported, "vision")
+	}
+	if reqs.AudioOutput && !config.SupportsAudioOutput {
+		unsupported = append(unsupported, "audio_output")
+	}
+	if reqs.PreviousResponse && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "previous_response_id")
+	}
+	if reqs.WebSearch && !config.SupportsWebSearch {
+		unsupported = append(unsupported, "web_search")
+	}
+	if reqs.MCP && !config.SupportsMCP {
+		unsupported = append(unsupported, "mcp")
+	}
+	if reqs.CodeInterpreter && !config.SupportsCodeInterpreter {
+		unsupported = append(unsupported, "code_interpreter")
+	}
+	if reqs.ImageGeneration && !config.SupportsImageGeneration {
+		unsupported = append(unsupported, "image_generation")
+	}
+	if reqs.PromptCache && !config.SupportsPromptCache {
+		unsupported = append(unsupported, "prompt_cache")
+	}
+	if reqs.ResponsesTools && config.UpstreamType != models.UpstreamTypeOpenAIResponses {
+		unsupported = append(unsupported, "responses_builtin_tools")
 	}
 	if len(unsupported) == 0 {
 		return nil
@@ -184,6 +224,47 @@ func requestUsesVision(inbound protocol.InboundProtocol, rawBody map[string]json
 	}
 }
 
+func requestUsesAudioOutput(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	switch inbound {
+	case protocol.InboundProtocolChat:
+		if raw, ok := rawBody["audio"]; ok && hasUsableRawField(raw) {
+			return true
+		}
+		if raw, ok := rawBody["modalities"]; ok && len(raw) > 0 {
+			var modalities []string
+			if err := json.Unmarshal(raw, &modalities); err == nil {
+				for _, modality := range modalities {
+					if strings.EqualFold(strings.TrimSpace(modality), "audio") {
+						return true
+					}
+				}
+			}
+		}
+	case protocol.InboundProtocolResponses:
+		if raw, ok := rawBody["modalities"]; ok && len(raw) > 0 {
+			var modalities []string
+			if err := json.Unmarshal(raw, &modalities); err == nil {
+				for _, modality := range modalities {
+					if strings.EqualFold(strings.TrimSpace(modality), "audio") {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func requestUsesPreviousResponseID(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	if inbound != protocol.InboundProtocolResponses {
+		return false
+	}
+	if raw, ok := rawBody["previous_response_id"]; ok && hasUsableRawField(raw) {
+		return true
+	}
+	return false
+}
+
 func requestUsesParallelToolCalls(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
 	if inbound == protocol.InboundProtocolAnthropic {
 		if rawChoice, ok := rawBody["tool_choice"]; ok && len(rawChoice) > 0 {
@@ -197,6 +278,55 @@ func requestUsesParallelToolCalls(inbound protocol.InboundProtocol, rawBody map[
 		return false
 	}
 	return boolField(rawBody["parallel_tool_calls"])
+}
+
+func requestUsesPromptCache(inbound protocol.InboundProtocol, rawBody map[string]json.RawMessage) bool {
+	if inbound != protocol.InboundProtocolResponses {
+		return false
+	}
+	return hasUsableRawField(rawBody["prompt_cache_key"]) || hasUsableRawField(rawBody["prompt_cache_retention"])
+}
+
+func requestUsesResponsesBuiltinTools(rawBody map[string]json.RawMessage) bool {
+	toolTypes := decodeToolTypes(rawBody["tools"])
+	for _, toolType := range toolTypes {
+		if toolType != "" && toolType != "function" {
+			return true
+		}
+	}
+	return false
+}
+
+func requestUsesBuiltInToolType(rawBody map[string]json.RawMessage, candidates ...string) bool {
+	toolTypes := decodeToolTypes(rawBody["tools"])
+	for _, toolType := range toolTypes {
+		for _, candidate := range candidates {
+			if toolType == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func decodeToolTypes(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return nil
+	}
+	result := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		result = append(result, stringValue(tool["type"]))
+	}
+	return result
+}
+
+func hasUsableRawField(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null" && trimmed != "\"\""
 }
 
 func chatMessagesUseVision(raw json.RawMessage) bool {

@@ -240,6 +240,14 @@
               <el-switch v-model="form.supportsJsonSchema" inline-prompt active-text="JSON Schema" inactive-text="JSON Schema" />
               <el-switch v-model="form.supportsVision" inline-prompt active-text="Vision" inactive-text="Vision" />
               <el-switch v-model="form.supportsParallelToolCalls" inline-prompt active-text="Parallel Tools" inactive-text="Parallel Tools" />
+              <el-switch v-model="form.supportsRefusal" inline-prompt active-text="Refusal" inactive-text="Refusal" />
+              <el-switch v-model="form.supportsAnnotations" inline-prompt active-text="Annotations" inactive-text="Annotations" />
+              <el-switch v-model="form.supportsAudioOutput" inline-prompt active-text="Audio" inactive-text="Audio" />
+              <el-switch v-model="form.supportsWebSearch" inline-prompt active-text="Web Search" inactive-text="Web Search" />
+              <el-switch v-model="form.supportsMCP" inline-prompt active-text="MCP" inactive-text="MCP" />
+              <el-switch v-model="form.supportsCodeInterpreter" inline-prompt active-text="Code Interpreter" inactive-text="Code Interpreter" />
+              <el-switch v-model="form.supportsImageGeneration" inline-prompt active-text="Image Generation" inactive-text="Image Generation" />
+              <el-switch v-model="form.supportsPromptCache" inline-prompt active-text="Prompt Cache" inactive-text="Prompt Cache" />
             </div>
           </el-form-item>
           <el-form-item label="启用状态">
@@ -289,6 +297,14 @@ const defaultForm = () => ({
   supportsJsonSchema: false,
   supportsVision: false,
   supportsParallelToolCalls: false,
+  supportsRefusal: false,
+  supportsAnnotations: false,
+  supportsAudioOutput: false,
+  supportsWebSearch: false,
+  supportsMCP: false,
+  supportsCodeInterpreter: false,
+  supportsImageGeneration: false,
+  supportsPromptCache: false,
 });
 const form = ref(defaultForm());
 
@@ -378,6 +394,14 @@ const normalizeModelConfig = (config = {}) => ({
   supportsJsonSchema: config.supportsJsonSchema ?? config.supports_json_schema ?? false,
   supportsVision: config.supportsVision ?? config.supports_vision ?? false,
   supportsParallelToolCalls: config.supportsParallelToolCalls ?? config.supports_parallel_tool_calls ?? false,
+  supportsRefusal: config.supportsRefusal ?? config.supports_refusal ?? false,
+  supportsAnnotations: config.supportsAnnotations ?? config.supports_annotations ?? false,
+  supportsAudioOutput: config.supportsAudioOutput ?? config.supports_audio_output ?? false,
+  supportsWebSearch: config.supportsWebSearch ?? config.supports_web_search ?? false,
+  supportsMCP: config.supportsMCP ?? config.supports_mcp ?? false,
+  supportsCodeInterpreter: config.supportsCodeInterpreter ?? config.supports_code_interpreter ?? false,
+  supportsImageGeneration: config.supportsImageGeneration ?? config.supports_image_generation ?? false,
+  supportsPromptCache: config.supportsPromptCache ?? config.supports_prompt_cache ?? false,
 });
 
 const buildModelConfigPayload = (config, overrides = {}) => ({
@@ -396,6 +420,14 @@ const buildModelConfigPayload = (config, overrides = {}) => ({
   supports_json_schema: overrides.supportsJsonSchema ?? config.supportsJsonSchema,
   supports_vision: overrides.supportsVision ?? config.supportsVision,
   supports_parallel_tool_calls: overrides.supportsParallelToolCalls ?? config.supportsParallelToolCalls,
+  supports_refusal: overrides.supportsRefusal ?? config.supportsRefusal,
+  supports_annotations: overrides.supportsAnnotations ?? config.supportsAnnotations,
+  supports_audio_output: overrides.supportsAudioOutput ?? config.supportsAudioOutput,
+  supports_web_search: overrides.supportsWebSearch ?? config.supportsWebSearch,
+  supports_mcp: overrides.supportsMCP ?? config.supportsMCP,
+  supports_code_interpreter: overrides.supportsCodeInterpreter ?? config.supportsCodeInterpreter,
+  supports_image_generation: overrides.supportsImageGeneration ?? config.supportsImageGeneration,
+  supports_prompt_cache: overrides.supportsPromptCache ?? config.supportsPromptCache,
   enabled: overrides.enabled ?? config.enabled,
   ...(overrides.apiKey ? { api_key: overrides.apiKey } : {}),
 });
@@ -640,6 +672,14 @@ const capabilityTags = (config) => ([
   config.supportsJsonSchema && 'JSON Schema',
   config.supportsVision && 'Vision',
   config.supportsParallelToolCalls && 'Parallel Tools',
+  config.supportsRefusal && 'Refusal',
+  config.supportsAnnotations && 'Annotations',
+  config.supportsAudioOutput && 'Audio',
+  config.supportsWebSearch && 'Web Search',
+  config.supportsMCP && 'MCP',
+  config.supportsCodeInterpreter && 'Code Interpreter',
+  config.supportsImageGeneration && 'Image Generation',
+  config.supportsPromptCache && 'Prompt Cache',
 ].filter(Boolean));
 const getWaitingRequests = (config) => getStat(config)?.waitingRequests || 0;
 const getScoreColor = (v) => {

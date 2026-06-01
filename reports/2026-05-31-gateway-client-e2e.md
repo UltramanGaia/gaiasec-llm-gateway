@@ -92,6 +92,57 @@ Reasoning streaming is now functional again, but it still deserves broader parit
 
 ### Gateway smoke
 
+默认执行的 smoke 场景为：
+
+- non-stream text
+- stream text
+- non-stream tool call
+- stream tool call
+
+脚本现已支持按环境变量开启扩展 smoke 场景：
+
+- `UPSTREAM_TYPE=openai_chat|openai_responses|anthropic_messages`
+- `ENABLE_STRUCTURED_OUTPUT_SMOKE=1`
+- `ENABLE_RESPONSES_STRUCTURED_OUTPUT_SMOKE=1`
+- `ENABLE_VISION_SMOKE=1`
+- `ENABLE_FILE_SMOKE=1`
+- `ENABLE_RESPONSES_PREVIOUS_RESPONSE_SMOKE=1`
+- `ENABLE_RESPONSES_PREVIOUS_RESPONSE_STREAM_SMOKE=1`
+- `ENABLE_RESPONSES_SMOKE=1`
+- `ENABLE_RESPONSES_PREVIOUS_RESPONSE_TOOL_SMOKE=1`
+- `ENABLE_RESPONSES_PREVIOUS_RESPONSE_TOOL_STREAM_SMOKE=1`
+- `ENABLE_ANTHROPIC_SMOKE=1`
+- `ENABLE_RESPONSES_STREAM_SMOKE=1`
+- `ENABLE_ANTHROPIC_STREAM_SMOKE=1`
+- `ENABLE_RESPONSES_TOOL_SMOKE=1`
+- `ENABLE_ANTHROPIC_TOOL_SMOKE=1`
+- `ENABLE_RESPONSES_TOOL_STREAM_SMOKE=1`
+- `ENABLE_ANTHROPIC_TOOL_STREAM_SMOKE=1`
+
+这些扩展场景用于补充：
+
+- structured output
+- responses structured output
+- image non-stream
+- file non-stream
+- responses previous_response_id non-stream
+- responses previous_response_id stream
+- responses previous_response_id tool non-stream
+- responses previous_response_id tool stream
+- `/v1/responses` non-stream
+- `/v1/messages` non-stream
+- `/v1/responses` stream
+- `/v1/messages` stream
+- `/v1/responses` tool path
+- `/v1/messages` tool path
+- `/v1/responses` tool stream
+- `/v1/messages` tool stream
+
+注意：
+
+- `previous_response_id` 相关 smoke 现要求 `UPSTREAM_TYPE=openai_responses`
+- 若仍使用默认 `openai_chat`，脚本会将这些场景标记为 `skipped`
+
 The smoke script summary showed:
 
 ```json

@@ -134,6 +134,15 @@ func TestResponsesResponseIRRoundTrip(t *testing.T) {
 		"object":"response",
 		"status":"completed",
 		"model":"resp-test",
+		"metadata":{"trace_id":"abc"},
+		"incomplete_details":{"reason":"max_output_tokens"},
+		"error":{"message":"soft failure","type":"server_error"},
+		"conversation":{"id":"conv_1"},
+		"prompt":{"id":"pmpt_1","version":"2"},
+		"reasoning":{"effort":"medium"},
+		"text":{"format":{"type":"json_schema"}},
+		"tool_choice":{"type":"auto"},
+		"tools":[{"type":"function","name":"lookup"}],
 		"output":[
 			{"type":"function_call","id":"call_1","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"hello\"}","status":"completed"},
 			{"type":"reasoning","summary":[{"type":"summary_text","text":"think"}],"status":"completed"},
@@ -148,6 +157,12 @@ func TestResponsesResponseIRRoundTrip(t *testing.T) {
 	}
 	if ir.FinishReason != "tool_calls" {
 		t.Fatalf("expected tool_calls finish, got %q", ir.FinishReason)
+	}
+	if ir.Status != "completed" || string(ir.Metadata) == "" || string(ir.IncompleteDetails) == "" || string(ir.Error) == "" {
+		t.Fatalf("expected top-level metadata preserved, got %+v", ir)
+	}
+	if string(ir.Conversation) == "" || string(ir.Prompt) == "" || string(ir.ReasoningConfig) == "" || string(ir.TextConfig) == "" || string(ir.ToolChoice) == "" || string(ir.Tools) == "" {
+		t.Fatalf("expected top-level responses configs preserved, got %+v", ir)
 	}
 	var sawReasoning bool
 	for _, msg := range ir.OutputItems {
@@ -171,6 +186,18 @@ func TestResponsesResponseIRRoundTrip(t *testing.T) {
 	if payload["model"] != "backend-resp" {
 		t.Fatalf("expected rewritten model, got %v", payload["model"])
 	}
+	if payload["status"] != "completed" {
+		t.Fatalf("expected status round-trip, got %+v", payload["status"])
+	}
+	if _, ok := payload["metadata"].(map[string]interface{}); !ok {
+		t.Fatalf("expected metadata to round-trip, got %+v", payload["metadata"])
+	}
+	if _, ok := payload["conversation"].(map[string]interface{}); !ok {
+		t.Fatalf("expected conversation to round-trip, got %+v", payload["conversation"])
+	}
+	if _, ok := payload["tools"].([]interface{}); !ok {
+		t.Fatalf("expected tools to round-trip, got %+v", payload["tools"])
+	}
 	output := payload["output"].([]interface{})
 	var sawReasoningItem bool
 	for _, raw := range output {
@@ -181,6 +208,257 @@ func TestResponsesResponseIRRoundTrip(t *testing.T) {
 	}
 	if !sawReasoningItem {
 		t.Fatalf("expected reasoning item to round-trip, got %+v", output)
+	}
+}
+
+func TestEncodeOpenAIChatResponseUsesMessageContentWhenReasoningItemComesFirst(t *testing.T) {
+	ir := IRResponse{
+		ID:          "resp_reasoning_first",
+		Model:       "resp-model",
+		FinishReason: "stop",
+		OutputItems: []IRMessage{
+			{
+				ID:     "rs_1",
+				Type:   "reasoning",
+				Role:   "assistant",
+				Status: "completed",
+				Content: []IRPart{{
+					Type: "reasoning",
+					Text: "think step",
+				}},
+			},
+			{
+				ID:     "msg_1",
+				Type:   "message",
+				Role:   "assistant",
+				Status: "completed",
+				Content: []IRPart{{
+					Type: "output_text",
+					Text: "hello",
+				}},
+			},
+		},
+	}
+
+	encoded, err := EncodeOpenAIChatResponse(ir, "backend-chat")
+	if err != nil {
+		t.Fatalf("EncodeOpenAIChatResponse error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded chat response: %v", err)
+	}
+	message := payload["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	if message["content"] != "hello" {
+		t.Fatalf("expected message content from later message item, got %+v", message["content"])
+	}
+	if message["reasoning_content"] != "think step" {
+		t.Fatalf("expected reasoning_content preserved, got %+v", message["reasoning_content"])
+	}
+}
+
+func TestResponsesResponsePreservesRichOutputItems(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_rich",
+		"object":"response",
+		"status":"incomplete",
+		"model":"resp-rich",
+		"output":[
+			{"type":"custom_tool_call","id":"ctc_1","call_id":"ctc_1","name":"local_shell","input":"ls -la","status":"completed"},
+			{"type":"mcp_call","id":"mcp_1","call_id":"mcp_1","name":"fetch","arguments":"{\"q\":\"hello\"}","status":"completed"},
+			{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"OpenAI"}},
+			{"type":"file_search_call","id":"fs_1","name":"file_search_call","input":"search docs","status":"completed"},
+			{"type":"image_generation_call","id":"img_1","status":"completed","result":"image_123"},
+			{"type":"compaction","id":"cmp_1","status":"completed","summary":[{"type":"summary_text","text":"compressed"}]}
+		],
+		"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}
+	}`)
+
+	ir, err := DecodeResponsesResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeResponsesResponse error: %v", err)
+	}
+	if len(ir.OutputItems) != 6 {
+		t.Fatalf("expected 6 output items, got %+v", ir.OutputItems)
+	}
+	if ir.OutputItems[0].Type != "custom_tool_call" || ir.OutputItems[3].Type != "file_search_call" || ir.OutputItems[5].Type != "compaction" {
+		t.Fatalf("expected richer item types preserved, got %+v", ir.OutputItems)
+	}
+
+	encoded, err := EncodeResponsesResponse(ir, "backend-resp-rich")
+	if err != nil {
+		t.Fatalf("EncodeResponsesResponse error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded responses response: %v", err)
+	}
+	output := payload["output"].([]interface{})
+	if len(output) != 6 {
+		t.Fatalf("expected 6 output items to round-trip, got %+v", output)
+	}
+	if output[0].(map[string]interface{})["type"] != "custom_tool_call" || output[3].(map[string]interface{})["type"] != "file_search_call" || output[5].(map[string]interface{})["type"] != "compaction" {
+		t.Fatalf("expected richer output item types to round-trip, got %+v", output)
+	}
+}
+
+func TestOpenAIChatResponsePreservesRefusalAndAudio(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl_refusal",
+		"object":"chat.completion",
+		"model":"gpt-refusal",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"hello","refusal":"cannot comply","audio":{"id":"aud_1","expires_at":123}},"finish_reason":"stop"}]
+	}`)
+
+	ir, err := DecodeOpenAIChatResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatResponse error: %v", err)
+	}
+	if len(ir.OutputItems) != 1 {
+		t.Fatalf("expected one output item, got %+v", ir.OutputItems)
+	}
+	var sawRefusal, sawAudio bool
+	for _, part := range ir.OutputItems[0].Content {
+		if part.Type == "refusal" && part.Refusal == "cannot comply" {
+			sawRefusal = true
+		}
+		if part.Type == "audio" && len(part.Audio) > 0 {
+			sawAudio = true
+		}
+	}
+	if !sawRefusal || !sawAudio {
+		t.Fatalf("expected refusal and audio parts, got %+v", ir.OutputItems[0].Content)
+	}
+
+	encoded, err := EncodeOpenAIChatResponse(ir, "backend-chat")
+	if err != nil {
+		t.Fatalf("EncodeOpenAIChatResponse error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded chat response: %v", err)
+	}
+	message := payload["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})
+	if message["refusal"] != "cannot comply" {
+		t.Fatalf("expected refusal to round-trip, got %+v", message["refusal"])
+	}
+	if _, ok := message["audio"].(map[string]interface{}); !ok {
+		t.Fatalf("expected audio to round-trip, got %+v", message["audio"])
+	}
+}
+
+func TestOpenAIChatResponseStructuredContentPreservesAnnotationsRefusalAndAudioAcrossProtocols(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl_structured_rich",
+		"object":"chat.completion",
+		"model":"gpt-rich",
+		"choices":[{"index":0,"message":{"role":"assistant","content":[
+			{"type":"text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]},
+			{"type":"refusal","refusal":"blocked"},
+			{"type":"audio","audio":{"id":"aud_1","format":"wav"}}
+		]},"finish_reason":"stop"}]
+	}`)
+
+	ir, err := DecodeOpenAIChatResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatResponse error: %v", err)
+	}
+	if len(ir.OutputItems) != 1 || len(ir.OutputItems[0].Content) != 3 {
+		t.Fatalf("expected structured rich content in IR, got %+v", ir.OutputItems)
+	}
+	if len(ir.OutputItems[0].Content[0].Annotations) == 0 {
+		t.Fatalf("expected annotations preserved, got %+v", ir.OutputItems[0].Content[0])
+	}
+	if ir.OutputItems[0].Content[1].Type != "refusal" || ir.OutputItems[0].Content[1].Refusal != "blocked" {
+		t.Fatalf("expected refusal preserved, got %+v", ir.OutputItems[0].Content)
+	}
+	if ir.OutputItems[0].Content[2].Type != "audio" || len(ir.OutputItems[0].Content[2].Audio) == 0 {
+		t.Fatalf("expected audio preserved, got %+v", ir.OutputItems[0].Content)
+	}
+
+	responsesEncoded, err := EncodeResponsesResponse(ir, "backend-responses")
+	if err != nil {
+		t.Fatalf("EncodeResponsesResponse error: %v", err)
+	}
+	var responsesPayload map[string]interface{}
+	if err := json.Unmarshal(responsesEncoded, &responsesPayload); err != nil {
+		t.Fatalf("unmarshal encoded responses response: %v", err)
+	}
+	content := responsesPayload["output"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if content[0].(map[string]interface{})["annotations"] == nil {
+		t.Fatalf("expected annotations to survive chat->responses conversion, got %+v", content[0])
+	}
+	if content[1].(map[string]interface{})["type"] != "refusal" || content[2].(map[string]interface{})["type"] != "output_audio" {
+		t.Fatalf("expected refusal/audio to survive chat->responses conversion, got %+v", content)
+	}
+
+	anthropicEncoded, err := EncodeAnthropicResponse(ir, "backend-claude")
+	if err != nil {
+		t.Fatalf("EncodeAnthropicResponse error: %v", err)
+	}
+	var anthropicPayload map[string]interface{}
+	if err := json.Unmarshal(anthropicEncoded, &anthropicPayload); err != nil {
+		t.Fatalf("unmarshal encoded anthropic response: %v", err)
+	}
+	anthropicContent := anthropicPayload["content"].([]interface{})
+	var sawAnnotations, sawRefusal, sawAudio bool
+	for _, raw := range anthropicContent {
+		item := raw.(map[string]interface{})
+		if item["annotations"] != nil {
+			sawAnnotations = true
+		}
+		if item["refusal"] == "blocked" {
+			sawRefusal = true
+		}
+		if _, ok := item["audio"].(map[string]interface{}); ok {
+			sawAudio = true
+		}
+	}
+	if !sawAnnotations || !sawRefusal || !sawAudio {
+		t.Fatalf("expected annotations/refusal/audio to survive chat->anthropic conversion, got %+v", anthropicContent)
+	}
+}
+
+func TestResponsesResponsePreservesRefusalAnnotationsAndAudioContent(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_content_rich",
+		"object":"response",
+		"status":"completed",
+		"model":"resp-content-rich",
+		"output":[
+			{"type":"message","role":"assistant","status":"completed","content":[
+				{"type":"output_text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]},
+				{"type":"refusal","refusal":"blocked"},
+				{"type":"output_audio","audio":{"id":"aud_1","format":"wav"}}
+			]}
+		]
+	}`)
+
+	ir, err := DecodeResponsesResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeResponsesResponse error: %v", err)
+	}
+	if len(ir.OutputItems) != 1 || len(ir.OutputItems[0].Content) != 3 {
+		t.Fatalf("expected rich message content, got %+v", ir.OutputItems)
+	}
+	if ir.OutputItems[0].Content[0].Type != "output_text" || len(ir.OutputItems[0].Content[0].Annotations) == 0 {
+		t.Fatalf("expected annotations preserved, got %+v", ir.OutputItems[0].Content[0])
+	}
+	if ir.OutputItems[0].Content[1].Type != "refusal" || ir.OutputItems[0].Content[2].Type != "audio" {
+		t.Fatalf("expected refusal/audio parts preserved, got %+v", ir.OutputItems[0].Content)
+	}
+
+	encoded, err := EncodeResponsesResponse(ir, "backend-resp")
+	if err != nil {
+		t.Fatalf("EncodeResponsesResponse error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded responses response: %v", err)
+	}
+	content := payload["output"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
+	if content[1].(map[string]interface{})["type"] != "refusal" || content[2].(map[string]interface{})["type"] != "output_audio" {
+		t.Fatalf("expected refusal/audio content to round-trip, got %+v", content)
 	}
 }
 
@@ -311,6 +589,58 @@ func TestAnthropicResponseIRRoundTrip(t *testing.T) {
 	}
 	if !sawThinking {
 		t.Fatalf("expected thinking block to round-trip, got %+v", payload["content"])
+	}
+}
+
+func TestAnthropicResponsePreservesAnnotationsRefusalAndAudioExtensions(t *testing.T) {
+	body := []byte(`{
+		"id":"msg_rich",
+		"type":"message",
+		"role":"assistant",
+		"model":"claude-rich",
+		"content":[
+			{"type":"text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]},
+			{"type":"text","text":"blocked","refusal":"blocked"},
+			{"type":"text","text":"","audio":{"id":"aud_1","format":"wav"}}
+		],
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":4,"output_tokens":2}
+	}`)
+
+	ir, err := DecodeAnthropicResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeAnthropicResponse error: %v", err)
+	}
+	if len(ir.OutputItems) != 1 || len(ir.OutputItems[0].Content) != 4 {
+		t.Fatalf("expected rich anthropic content to decode, got %+v", ir.OutputItems)
+	}
+	if ir.OutputItems[0].Content[0].Type != "text" || len(ir.OutputItems[0].Content[0].Annotations) == 0 {
+		t.Fatalf("expected annotations on text part, got %+v", ir.OutputItems[0].Content[0])
+	}
+	if ir.OutputItems[0].Content[2].Type != "refusal" || ir.OutputItems[0].Content[2].Refusal != "blocked" {
+		t.Fatalf("expected refusal part preserved, got %+v", ir.OutputItems[0].Content)
+	}
+	if ir.OutputItems[0].Content[3].Type != "audio" || len(ir.OutputItems[0].Content[3].Audio) == 0 {
+		t.Fatalf("expected audio part preserved, got %+v", ir.OutputItems[0].Content)
+	}
+
+	encoded, err := EncodeAnthropicResponse(ir, "backend-claude")
+	if err != nil {
+		t.Fatalf("EncodeAnthropicResponse error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded anthropic response: %v", err)
+	}
+	content := payload["content"].([]interface{})
+	if content[0].(map[string]interface{})["annotations"] == nil {
+		t.Fatalf("expected annotations extension to round-trip, got %+v", content[0])
+	}
+	if content[2].(map[string]interface{})["refusal"] != "blocked" {
+		t.Fatalf("expected refusal extension to round-trip, got %+v", content[2])
+	}
+	if _, ok := content[3].(map[string]interface{})["audio"].(map[string]interface{}); !ok {
+		t.Fatalf("expected audio extension to round-trip, got %+v", content[3])
 	}
 }
 

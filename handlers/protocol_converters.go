@@ -78,6 +78,14 @@ func convertResponsesResponseToChatResponse(respBody []byte, requestedModel stri
 	return protocol.EncodeOpenAIChatResponse(ir, requestedModel)
 }
 
+func convertResponsesResponseToAnthropicResponse(respBody []byte, requestedModel string) ([]byte, error) {
+	ir, err := protocol.DecodeResponsesResponse(respBody)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.EncodeAnthropicResponse(ir, requestedModel)
+}
+
 func convertAnthropicResponseToChatResponse(respBody []byte, requestedModel string) ([]byte, error) {
 	ir, err := protocol.DecodeAnthropicResponse(respBody)
 	if err != nil {

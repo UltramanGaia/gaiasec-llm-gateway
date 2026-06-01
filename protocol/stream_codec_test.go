@@ -79,3 +79,38 @@ func TestResponsesCompletedAndDoneEventFormatting(t *testing.T) {
 		t.Fatalf("unexpected done event text %s", doneText)
 	}
 }
+
+func TestConvertChatChunkToResponsesEventsIncludesAudio(t *testing.T) {
+	chunk := map[string]interface{}{
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index": 0.0,
+				"delta": map[string]interface{}{
+					"role":  "assistant",
+					"audio": map[string]interface{}{"id": "aud_1", "format": "wav"},
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+
+	events := ConvertChatChunkToResponsesEvents(chunk, 8)
+	var sawAudioAdded, sawAudioDelta, sawAudioDone bool
+	for _, event := range events {
+		switch event.Event {
+		case "response.content_part.added":
+			data := event.Data.(map[string]interface{})
+			part := data["part"].(map[string]interface{})
+			if part["type"] == "output_audio" {
+				sawAudioAdded = true
+			}
+		case "response.audio.delta":
+			sawAudioDelta = true
+		case "response.audio.done":
+			sawAudioDone = true
+		}
+	}
+	if !sawAudioAdded || !sawAudioDelta || !sawAudioDone {
+		t.Fatalf("expected output_audio lifecycle, got added=%v delta=%v done=%v", sawAudioAdded, sawAudioDelta, sawAudioDone)
+	}
+}

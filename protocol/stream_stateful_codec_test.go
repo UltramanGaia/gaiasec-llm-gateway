@@ -78,6 +78,274 @@ func TestAnthropicEventsFromResponsesFramePreserveImagePart(t *testing.T) {
 	}
 }
 
+func TestChatChunksFromResponsesFrameRefusalDelta(t *testing.T) {
+	state := NewResponsesStreamState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_refusal","model":"resp-model"}}`},
+		{Event: "response.refusal.delta", Data: `{"type":"response.refusal.delta","output_index":0,"delta":"cannot comply"}`},
+	}
+
+	var sawRole, sawRefusal bool
+	for _, frame := range frames {
+		chunks, _ := ChatChunksFromResponsesFrame(frame, state)
+		for _, chunk := range chunks {
+			choices := chunk["choices"].([]map[string]interface{})
+			delta := choices[0]["delta"].(map[string]interface{})
+			if delta["role"] == "assistant" {
+				sawRole = true
+			}
+			if delta["refusal"] == "cannot comply" {
+				sawRefusal = true
+			}
+		}
+	}
+	if !sawRole || !sawRefusal {
+		t.Fatalf("expected role and refusal chunks, got role=%v refusal=%v", sawRole, sawRefusal)
+	}
+}
+
+func TestAnthropicEventsFromResponsesFramePreservesCustomToolLifecycle(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_custom","model":"resp-model"}}`},
+		{Event: "response.output_item.added", Data: `{"type":"response.output_item.added","output_index":5,"item":{"type":"custom_tool_call","id":"call_1","call_id":"call_1","name":"local_shell","status":"in_progress"}}`},
+		{Event: "response.function_call_arguments.delta", Data: `{"type":"response.function_call_arguments.delta","output_index":5,"delta":"{\"cmd\":\"ls\"}"}`},
+	}
+
+	var sawToolStart, sawToolDelta bool
+	for _, frame := range frames {
+		events := AnthropicEventsFromResponsesFrame(frame, state)
+		for _, event := range events {
+			if event.Event == "content_block_start" && strings.Contains(event.Data, `"type":"tool_use"`) && strings.Contains(event.Data, `"name":"local_shell"`) {
+				sawToolStart = true
+			}
+			if event.Event == "content_block_delta" && strings.Contains(event.Data, `"input_json_delta"`) {
+				sawToolDelta = true
+			}
+		}
+	}
+	if !sawToolStart || !sawToolDelta {
+		t.Fatalf("expected custom tool lifecycle to map to anthropic tool_use, got start=%v delta=%v", sawToolStart, sawToolDelta)
+	}
+}
+
+func TestAnthropicEventsFromResponsesFramePreservesReasoningDelta(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_reasoning","model":"resp-model"}}`},
+		{Event: "response.reasoning.delta", Data: `{"type":"response.reasoning.delta","output_index":50,"item_id":"rs_1","delta":"think step"}`},
+	}
+
+	var sawThinkingStart, sawThinkingDelta bool
+	for _, frame := range frames {
+		events := AnthropicEventsFromResponsesFrame(frame, state)
+		for _, event := range events {
+			if event.Event == "content_block_start" && strings.Contains(event.Data, `"type":"thinking"`) {
+				sawThinkingStart = true
+			}
+			if event.Event == "content_block_delta" && strings.Contains(event.Data, `"thinking":"think step"`) {
+				sawThinkingDelta = true
+			}
+		}
+	}
+	if !sawThinkingStart || !sawThinkingDelta {
+		t.Fatalf("expected responses reasoning delta to map to anthropic thinking, got start=%v delta=%v", sawThinkingStart, sawThinkingDelta)
+	}
+}
+
+func TestAnthropicEventsFromResponsesFramePreservesAnnotationAndAudio(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_rich","model":"resp-model"}}`},
+		{Event: "response.annotation.added", Data: `{"type":"response.annotation.added","output_index":0,"annotations":[{"type":"url_citation","title":"doc"}]}`},
+		{Event: "response.audio.delta", Data: `{"type":"response.audio.delta","output_index":0,"audio":{"id":"aud_1","format":"wav"}}`},
+	}
+
+	var sawAnnotationBlock, sawAudioBlock bool
+	for _, frame := range frames {
+		events := AnthropicEventsFromResponsesFrame(frame, state)
+		for _, event := range events {
+			if event.Event != "content_block_start" {
+				continue
+			}
+			if strings.Contains(event.Data, `"annotations"`) && strings.Contains(event.Data, `"url_citation"`) {
+				sawAnnotationBlock = true
+			}
+			if strings.Contains(event.Data, `"audio"`) && strings.Contains(event.Data, `"aud_1"`) {
+				sawAudioBlock = true
+			}
+		}
+	}
+	if !sawAnnotationBlock || !sawAudioBlock {
+		t.Fatalf("expected annotation/audio content blocks, got annotation=%v audio=%v", sawAnnotationBlock, sawAudioBlock)
+	}
+}
+
+func TestAnthropicEventsFromResponsesFramePreservesRefusal(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_refusal","model":"resp-model"}}`},
+		{Event: "response.refusal.delta", Data: `{"type":"response.refusal.delta","output_index":0,"delta":"blocked"}`},
+	}
+
+	var sawRefusalBlock bool
+	for _, frame := range frames {
+		events := AnthropicEventsFromResponsesFrame(frame, state)
+		for _, event := range events {
+			if event.Event == "content_block_start" && strings.Contains(event.Data, `"refusal":"blocked"`) {
+				sawRefusalBlock = true
+			}
+		}
+	}
+	if !sawRefusalBlock {
+		t.Fatalf("expected refusal content block")
+	}
+}
+
+func TestAnthropicFramesFromChatChunkPreserveRicherTextSemantics(t *testing.T) {
+	state := NewAnthropicOutboundState()
+	chunk := map[string]interface{}{
+		"id":    "chatcmpl_rich",
+		"model": "chat-model",
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index": 0.0,
+				"delta": map[string]interface{}{
+					"content":     "hello",
+					"refusal":     "blocked",
+					"annotations": []interface{}{map[string]interface{}{"type": "url_citation", "title": "doc"}},
+					"audio":       map[string]interface{}{"id": "aud_1", "format": "wav"},
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+
+	frames := AnthropicFramesFromChatChunk(chunk, state)
+	var sawAnnotationBlock, sawRefusalBlock, sawAudioBlock bool
+	for _, frame := range frames {
+		if frame.Event != "content_block_start" {
+			continue
+		}
+		if strings.Contains(frame.Data, `"annotations"`) && strings.Contains(frame.Data, `"url_citation"`) {
+			sawAnnotationBlock = true
+		}
+		if strings.Contains(frame.Data, `"refusal":"blocked"`) {
+			sawRefusalBlock = true
+		}
+		if strings.Contains(frame.Data, `"audio"`) && strings.Contains(frame.Data, `"aud_1"`) {
+			sawAudioBlock = true
+		}
+	}
+	if !sawAnnotationBlock || !sawRefusalBlock || !sawAudioBlock {
+		t.Fatalf("expected richer anthropic blocks, got annotation=%v refusal=%v audio=%v", sawAnnotationBlock, sawRefusalBlock, sawAudioBlock)
+	}
+}
+
+func TestChatChunksFromResponsesFrameAudioDelta(t *testing.T) {
+	state := NewResponsesStreamState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_audio","model":"resp-model"}}`},
+		{Event: "response.audio.delta", Data: `{"type":"response.audio.delta","output_index":0,"audio":{"id":"aud_1","format":"wav"}}`},
+	}
+
+	var sawRole, sawAudio bool
+	for _, frame := range frames {
+		chunks, _ := ChatChunksFromResponsesFrame(frame, state)
+		for _, chunk := range chunks {
+			choices := chunk["choices"].([]map[string]interface{})
+			delta := choices[0]["delta"].(map[string]interface{})
+			if delta["role"] == "assistant" {
+				sawRole = true
+			}
+			if _, ok := delta["audio"].(map[string]interface{}); ok {
+				sawAudio = true
+			}
+		}
+	}
+	if !sawRole || !sawAudio {
+		t.Fatalf("expected role and audio chunks, got role=%v audio=%v", sawRole, sawAudio)
+	}
+}
+
+func TestChatChunksFromResponsesFrameAnnotationDone(t *testing.T) {
+	state := NewResponsesStreamState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_annotations","model":"resp-model"}}`},
+		{Event: "response.content_part.done", Data: `{"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hello","annotations":[{"type":"url_citation","title":"doc"}]}}`},
+	}
+
+	var sawRole, sawAnnotations bool
+	for _, frame := range frames {
+		chunks, _ := ChatChunksFromResponsesFrame(frame, state)
+		for _, chunk := range chunks {
+			choices := chunk["choices"].([]map[string]interface{})
+			delta := choices[0]["delta"].(map[string]interface{})
+			if delta["role"] == "assistant" {
+				sawRole = true
+			}
+			if annotations, ok := delta["annotations"].([]interface{}); ok && len(annotations) == 1 {
+				sawAnnotations = true
+			}
+		}
+	}
+	if !sawRole || !sawAnnotations {
+		t.Fatalf("expected role and annotations chunks, got role=%v annotations=%v", sawRole, sawAnnotations)
+	}
+}
+
+func TestChatChunksFromResponsesFrameAnnotationAdded(t *testing.T) {
+	state := NewResponsesStreamState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_annotations_added","model":"resp-model"}}`},
+		{Event: "response.annotation.added", Data: `{"type":"response.annotation.added","output_index":0,"item_id":"msg_1","annotations":[{"type":"url_citation","title":"doc"}]}`},
+	}
+
+	var sawRole, sawAnnotations bool
+	for _, frame := range frames {
+		chunks, _ := ChatChunksFromResponsesFrame(frame, state)
+		for _, chunk := range chunks {
+			choices := chunk["choices"].([]map[string]interface{})
+			delta := choices[0]["delta"].(map[string]interface{})
+			if delta["role"] == "assistant" {
+				sawRole = true
+			}
+			if annotations, ok := delta["annotations"].([]interface{}); ok && len(annotations) == 1 {
+				sawAnnotations = true
+			}
+		}
+	}
+	if !sawRole || !sawAnnotations {
+		t.Fatalf("expected role and annotations chunks, got role=%v annotations=%v", sawRole, sawAnnotations)
+	}
+}
+
+func TestChatChunksFromResponsesFrameReasoningDelta(t *testing.T) {
+	state := NewResponsesStreamState()
+	frames := []SSEFrame{
+		{Event: "response.created", Data: `{"type":"response.created","response":{"id":"resp_reasoning","model":"resp-model"}}`},
+		{Event: "response.reasoning.delta", Data: `{"type":"response.reasoning.delta","output_index":50,"delta":"think step"}`},
+	}
+
+	var sawRole, sawReasoning bool
+	for _, frame := range frames {
+		chunks, _ := ChatChunksFromResponsesFrame(frame, state)
+		for _, chunk := range chunks {
+			choices := chunk["choices"].([]map[string]interface{})
+			delta := choices[0]["delta"].(map[string]interface{})
+			if delta["role"] == "assistant" {
+				sawRole = true
+			}
+			if delta["reasoning_content"] == "think step" {
+				sawReasoning = true
+			}
+		}
+	}
+	if !sawRole || !sawReasoning {
+		t.Fatalf("expected role and reasoning chunks, got role=%v reasoning=%v", sawRole, sawReasoning)
+	}
+}
+
 func TestAnthropicFramesFromChatChunk(t *testing.T) {
 	state := NewAnthropicOutboundState()
 	chunk := map[string]interface{}{

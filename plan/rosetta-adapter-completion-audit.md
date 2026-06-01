@@ -1,228 +1,325 @@
 # Rosetta Adapter Completion Audit
 
-## 审计结论
+更新时间：2026-06-01
 
-当前仓库已具备将 `plan/rosetta-adapter-execution-plan.md` 视为 **完成** 的证据。
+## 结论
 
-已完成的核心工作：
+当前仓库**不能**把 `plan/rosetta-gap-closure-plan.md` 视为完成。
 
-- 三个公共入口统一收敛到 `handleProtocolRequest`
-- `ModelConfig` 支持 `upstream_type` 与第一批能力位
-- `protocol/` 包已承载 request codec、non-stream response codec、stream codec 和大部分 stateful stream codec
-- `README.md`、`ARCHITECTURE.md`、兼容矩阵文档已更新
-- 前端 `frontend/src/views/ModelConfig.vue` 已支持编辑与展示 `upstream_type` / capability flags
-- 后端测试与前端构建均通过
+已有大量实质进展，但根据当前工作树证据，以下范围仍未完全闭环：
 
-剩余注意事项（不阻塞完成判定）：
+- richer response 的跨协议映射仍不完整
+- stream richer event 虽已显著推进，但统一 IR 接管与全协议覆盖仍不完整
+- `annotations` stream 只有局部主路径证据，尚未形成稳定全覆盖
+- richer response / stream 的 replay 与日志聚合仍不完整
+- Phase 7 真实客户端/真实上游验证已增强，但 richer built-in tool、多轮场景与更广模型样本仍不足
 
-- `json_schema` / `json_object` 在 response/stream 侧仍有继续增强空间，但当前已满足“保留主路径语义或显式拒绝”的阶段目标。
-- `vision` / `file` 的 stream 侧目前以最小保留和类型不封死为主，后续仍可继续增强。
-- handler 中仍保留少量 wrapper / sender 层函数，但主路径已统一收敛到 `handleProtocolRequest + protocol/* codec`。
+因此，该目标当前状态应为：`进行中，而非完成`。
+
+## 审计原则
+
+本审计只基于当前工作树与当前可验证证据，不基于历史意图。
+
+证据来源包括：
+
+- 当前源码
+- 当前测试
+- 当前脚本
+- 当前报告文档
 
 ## 分阶段审计
 
-### 阶段 0：基线梳理
+### Phase 0: 建立差距基线
 
 状态：`完成`
 
 证据：
 
-- 兼容矩阵与风险清单已落地：
-  - [plan/rosetta-adapter-compatibility-matrix.md](/home/icsl/gaiasec/gaiasec-llm-gateway/plan/rosetta-adapter-compatibility-matrix.md:1)
+- [plan/rosetta-gap-closure-plan.md](/home/icsl/gaiasec/gaiasec-llm-gateway/plan/rosetta-gap-closure-plan.md:1)
+- [plan/rosetta-adapter-compatibility-matrix.md](/home/icsl/gaiasec/gaiasec-llm-gateway/plan/rosetta-adapter-compatibility-matrix.md:1)
 
-### 阶段 1：配置模型升级
+### Phase 1: 扩展 IR 模型
 
-状态：`完成`
+状态：`部分完成`
 
-证据：
+已证明：
 
-- 后端模型与接口字段：
-  - [models/model_mapping.go](/home/icsl/gaiasec/gaiasec-llm-gateway/models/model_mapping.go:1)
-  - [handlers/model_mapping_handler.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/model_mapping_handler.go:1)
-- 后端测试：
-  - [handlers/model_mapping_handler_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/model_mapping_handler_test.go:1)
-- 前端编辑与展示：
-  - [frontend/src/views/ModelConfig.vue](/home/icsl/gaiasec/gaiasec-llm-gateway/frontend/src/views/ModelConfig.vue:1)
-- 前端构建通过：
-  - `cd frontend && npm run build`
-
-说明：
-
-- 计划中提到 `ModelConfig.vue`，仓库实际文件为 `frontend/src/views/ModelConfig.vue`，已更新。
-
-### 阶段 2：引入最小 IR 类型
-
-状态：`完成`
+- request / response 的 richer 顶层字段已扩入 IR
+- `IRTool` 已可承载 `raw_payload`
+- `IRPart` 已承载 `refusal/annotations/audio/status/id/call_id`
+- `IRStreamEvent` 已具备 richer stream 字段承载能力
+- 已有最小 `Responses/Chat -> IRStreamEvent` 归一化 helper
+- 已有 `Anthropic -> IRStreamEvent` 归一化 helper 与测试
+- `Responses/Anthropic -> IRStreamEvent` 已开始把 `reasoning.* / annotation.added / tool_call.* / audio.*` 等 lifecycle 统一归一化为更稳定的 IR 事件类型，并保留原始 provider event type
+- `responses -> chat stream`、`chat -> responses stream`、`responses -> anthropic stream`、`anthropic -> responses stream`、`chat -> anthropic stream`、`anthropic -> chat stream` 主路径已开始消费 IR 事件归一化结果
+- chat-like stream 聚合/日志辅助逻辑也已开始消费 IR 事件归一化结果
+- Responses replay fallback 聚合也已开始优先消费 `IRStreamEventsFromResponsesFrame`
+- `buildOpenAIStreamLogResponse` 里的 provider-specific chunk struct 解析也已收敛到通用 map + IR 事件聚合
+- Anthropic 输出包装层的 token 计量也已开始识别 richer `content_block_start`
+- `chat -> anthropic` 与 `responses -> anthropic` 两条输出包装路径都已共用 richer anthropic frame token 检测
+- `anthropicFrameHasOutputToken` 也已优先消费 `IRStreamEventsFromAnthropicFrame`
 
 证据：
 
 - [protocol/types.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/types.go:1)
+- [protocol/types_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/types_test.go:1)
+- [protocol/stream_ir.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_ir.go:1)
+- [protocol/stream_ir_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_ir_test.go:1)
+
+未完成点：
+
+- `IRStreamEvent` 已进入六条关键 stream codec 主路径，并继续进入 replay / 日志等外围聚合逻辑；但仍未统一接管所有包装与聚合逻辑
+- plan 中列出的 `reasoning_start/reasoning_done/annotation_added/tool_call_start/tool_call_done` 已有部分统一落到 IR 层；但仍未覆盖所有 richer event 与全部外围逻辑
+
+### Phase 2: 补齐 Request Codec
+
+状态：`大部分完成`
+
+已证明：
+
+- Chat / Responses / Anthropic richer request fields 已能 decode/encode 保留
+- built-in Responses tools 已可保留 raw payload
+- unsupported cross-protocol capability 已有前置拒绝
+- `previous_response_id` 对非 Responses upstream 也已有前置拒绝，且 handler 级已验证不会静默丢语义
+
+证据：
+
+- [protocol/request_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/request_codec.go:1)
+- [protocol/request_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/request_codec_test.go:1)
+- [handlers/protocol_capabilities.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_capabilities.go:1)
+- [handlers/protocol_capabilities_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_capabilities_test.go:1)
+
+未完成点：
+
+- “自动降级还是拒绝”的细粒度策略仍未完全覆盖所有 richer tools / request semantics
+
+### Phase 3: 补齐 Non-Stream Response Codec
+
+状态：`部分完成`
+
+已证明：
+
+- Responses 顶层 `status/metadata/error/incomplete_details/conversation/prompt/text/reasoning/tool_choice/tools` 已 same-protocol 保留
+- Responses richer output item `custom_tool_call/mcp_call/web_search_call/image_generation_call/compaction` 已能进入 IR 并 same-protocol round-trip
+- Chat `refusal/audio` 与 Responses `annotations/refusal/output_audio` 已有 non-stream 保留测试
+- `custom_tool_call` 的 `responses -> chat` / `responses -> anthropic` handler 级 mock integration 已有证据
+- `Anthropic tool_use -> Responses function_call` handler 级 mock integration 已有证据
+- `mcp_call` / `web_search_call` / `image_generation_call` 也已有更多 handler 级跨协议证据
+- `Chat structured richer message content (annotations/refusal/audio) -> Responses/Anthropic` non-stream 已有 codec 与 handler 级证据
+- `Responses richer message content (annotations/refusal/audio) -> Anthropic` non-stream 已有 codec 与 handler 级证据
+- `Anthropic structured richer message content (annotations/refusal/audio) -> Chat/Responses` non-stream 已有 codec 与 handler 级证据
+- `responses -> chat` non-stream 在 `reasoning item` 先于 `message` 时也已有回归修复与测试
+- `responses -> chat` non-stream 的主消息选择现在不再受 `reasoning item` 排序影响
+- richer mock integration 独立脚本已覆盖上述主要非流式 richer 路径
+- richer mock integration 独立脚本也已覆盖 richer tool-call stream 的关键跨协议路径
+
+证据：
+
+- [protocol/response_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec.go:1)
+- [protocol/response_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec_test.go:1)
+- [protocol/nonstream_golden_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/nonstream_golden_test.go:1)
+
+未完成点：
+
+- richer response 的跨协议映射仍不完整，但已有更多 handler 级降级/映射证据；覆盖面仍不足
+- `annotations` 的跨协议表达已不只停留在同协议保留与局部 chat 路径；`chat -> responses`、`chat -> anthropic`、`responses -> anthropic`、`anthropic -> chat`、`anthropic -> responses` non-stream 都已有保留证据，但仍未形成稳定全覆盖映射
+
+### Phase 4: 补齐 Stream Codec
+
+状态：`部分完成`
+
+已证明：
+
+- text delta / function tool call delta 主路径已支持
+- refusal stream 已补主路径
+- audio stream 已补 Chat <-> Responses 与 stream log 聚合主路径
+- Anthropic `thinking` -> Responses reasoning stream 已补主路径
+- richer `*_call` lifecycle 已补一部分
+- `Anthropic richer text-block stream (annotations/refusal/audio) -> Chat/Responses` 已有主路径证据
+- `Responses/Chat richer text stream (annotations/refusal/audio) -> Anthropic` 也已有 protocol + handler 主路径证据
+
+证据：
+
+- [protocol/stream_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_codec.go:1)
+- [protocol/stream_stateful_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_stateful_codec.go:1)
+- [protocol/stream_anthropic_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_anthropic_codec.go:1)
+- [protocol/stream_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_codec_test.go:1)
+- [protocol/stream_stateful_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_stateful_codec_test.go:1)
+- [protocol/stream_anthropic_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_anthropic_codec_test.go:1)
+- [handlers/protocol_handler_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_handler_test.go:1)
+
+未完成点：
+
+- `annotations/refusal/audio` 的 stream 主跨协议路径证据已明显增强，但 same-protocol 与长尾 richer item/finish lifecycle 仍未全覆盖
+- richer reasoning event 统一层仍不完整
+- `IRStreamEvent` 已能统一表达更多 `reasoning/tool/annotation/audio` lifecycle，但尚未完全承担所有 stream 包装/聚合的唯一中间层
+- 三协议间 richer stream parity 仍未完全证明
+
+### Phase 5: Capability Guard 升级
+
+状态：`大部分完成`
+
+已证明：
+
+- 新 capability flags 已入后端模型
+- `/api/model-configs` API 与前端配置页已接入
+- request capability 推导已覆盖 `web_search/mcp/code_interpreter/image_generation/prompt_cache`
+- request capability 推导已覆盖 `audio_output`
+
+证据：
+
+- [models/model_mapping.go](/home/icsl/gaiasec/gaiasec-llm-gateway/models/model_mapping.go:1)
+- [handlers/model_mapping_handler.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/model_mapping_handler.go:1)
+- [handlers/model_mapping_handler_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/model_mapping_handler_test.go:1)
+- [frontend/src/views/ModelConfig.vue](/home/icsl/gaiasec/gaiasec-llm-gateway/frontend/src/views/ModelConfig.vue:1)
+- [handlers/protocol_capabilities.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_capabilities.go:1)
+- `cd frontend && npm run build`
+
+未完成点：
+
+- 更细的自动降级/原样透传策略仍未完整证明
+
+### Phase 6: Logging 与可观测性补强
+
+状态：`部分完成`
+
+已证明：
+
+- `/api/request-logs` 已有 richer semantic summary
+- 可见 `tool subtype/reasoning/refusal/annotation_count/audio`
+- `Anthropic` richer content 的 `annotations/refusal/audio` 也已进入 semantic summary
+- stream 日志聚合已保留 `reasoning/tool_calls/refusal/audio`
+- richer same-protocol replay 已有基础验证证据
+- replay 的 chat-like stream 聚合已可保留 `reasoning/refusal/audio/annotations`
+- replay 的 Responses stream 已可直接保留 `response.completed` 完整 payload
+- replay 的 Anthropic stream 已可聚合为 anthropic message-like payload，并有 richer content `annotations/refusal/audio` 保留证据
+- replay 的 Responses stream 在缺少 `response.completed` 时已不只重建 text/tool args，也能重建 richer message content 的 `annotations/refusal/audio`
+- Responses replay fallback 的 `output_item/content_part` 也已开始优先消费 IR item/part
+- Anthropic replay 聚合也已开始优先消费 `IRStreamEventsFromAnthropicFrame`
+- Anthropic replay 的 delta 聚合也已开始优先消费 IR delta 事件，而不只依赖 raw `delta.type`
+- Anthropic replay 的 `content_block_start` 也已优先消费 IR item/block，而不只依赖 raw block payload
+- Anthropic replay 的 `message_start` 元数据也已优先消费 IR `item_id/usage`
+
+证据：
+
+- [handlers/log_handler.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/log_handler.go:1)
+- [handlers/log_handler_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/log_handler_test.go:1)
+- [handlers/chat_response.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/chat_response.go:1)
+
+未完成点：
+
+- richer item replay 仍只有 same-protocol 为主的证据，覆盖面不够
+- stream 聚合仍非完整 richer 结构，但 Responses 与 Anthropic 的 same-protocol replay 已明显补强，且 Responses fallback 重建已覆盖更多 richer message content
+
+### Phase 7: E2E 与真实客户端验证
+
+状态：`部分完成`
+
+已证明：
+
+- `go test ./...` 通过
+- richer mock integration 已补独立脚本
+- 已有真实客户端报告
+- `/v1/responses` / `/v1/messages` 的 expanded real-upstream smoke 已实跑通过
+
+证据：
+
+- [scripts/e2e_gateway_rich_mock.sh](/home/icsl/gaiasec/gaiasec-llm-gateway/scripts/e2e_gateway_rich_mock.sh:1)
+- [scripts/e2e_gateway_smoke.sh](/home/icsl/gaiasec/gaiasec-llm-gateway/scripts/e2e_gateway_smoke.sh:1)
+- [scripts/e2e_gateway_responses_upstream_smoke.sh](/home/icsl/gaiasec/gaiasec-llm-gateway/scripts/e2e_gateway_responses_upstream_smoke.sh:1)
+- [reports/2026-05-31-gateway-client-e2e.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-05-31-gateway-client-e2e.md:1)
+- [reports/2026-05-31-rosetta-rich-mock-e2e.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-05-31-rosetta-rich-mock-e2e.md:1)
+- [reports/2026-06-01-gateway-smoke-expanded.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-smoke-expanded.md:1)
+- [reports/2026-06-01-gateway-structured-vision-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-structured-vision-smoke.md:1)
+- [reports/2026-06-01-gateway-reasoning-stream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-reasoning-stream-smoke.md:1)
+- [reports/2026-06-01-gateway-file-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-file-smoke.md:1)
+- [reports/2026-06-01-gateway-previous-response-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-smoke.md:1)
+- [reports/2026-06-01-gateway-previous-response-stream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-stream-smoke.md:1)
+- [reports/2026-06-01-gateway-previous-response-tool-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-tool-smoke.md:1)
+- [reports/2026-06-01-gateway-previous-response-tool-stream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-tool-stream-smoke.md:1)
+- [reports/2026-06-01-gateway-previous-response-responses-upstream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-previous-response-responses-upstream-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt54mini-structured-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54mini-structured-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt55-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt55-smoke.md:1)
+- [reports/2026-06-01-gateway-smoke-full.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-smoke-full.md:1)
+- [reports/2026-06-01-gateway-toolpath-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-toolpath-smoke.md:1)
+- [reports/2026-06-01-gateway-tool-stream-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-tool-stream-smoke.md:1)
+- [reports/2026-06-01-gateway-smoke-max.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-smoke-max.md:1)
 - `go test ./...`
 
-### 阶段 3：请求方向三协议解码/编码
+未完成点：
 
-状态：`完成`
+- real-upstream smoke 已覆盖三入口的基础 non-stream/stream 主路径、chat/responses structured output、responses `previous_response_id` non-stream/stream follow-up、responses `previous_response_id + tool` non-stream/stream follow-up、tool-path（含 stream），并对 vision/file 给出真实结果；最新 `max6` bundle 已全量实跑通过
+- 但在当前实现真正允许的 `openai_responses` upstream 路由下，专用 real-smoke 已证明：baseline `/v1/responses` non-stream/stream 能通过，而 `previous_response_id` 的四类 follow-up 变体都会稳定分类为 `failed_upstream`，当前上游返回 `404 not found`
+- 第二个模型样本 `gpt-5.2` 的专用 `openai_responses` real-smoke 也已补上，证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
+- `gpt-5.2` 的专用 real-smoke 还补出了一条更强的 richer 多轮成功案例：`previous_response_id + structured output` 在 non-stream / stream 都可通过
+- 第三个模型样本 `gpt-5.3-codex` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
+- 第四个模型样本 `gpt-5.4` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
+- 第五个模型样本 `gpt-5.4-mini` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
+- `gpt-5.4-mini` 的专用 real-smoke 还补出了一条对照样本：`previous_response_id + structured output` 在 non-stream / stream 都会分类为 `failed_upstream`
+- 第六个模型样本 `gpt-5.5` 的专用 `openai_responses` real-smoke 也已补上，进一步强化了“更多模型样本”这一维度的真实证据
+- 但 richer built-in tool 的更广真实上游场景、更多多轮场景与更广模型样本仍不足
 
-证据：
+## 当前最关键未完成项
 
-- codec：
-  - [protocol/request_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/request_codec.go:1)
-- round-trip tests：
-  - [protocol/request_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/request_codec_test.go:1)
-- handler wrappers：
-  - [handlers/protocol_converters.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_converters.go:1)
+按 plan 目标与现状对齐，当前最关键的未完成项是：
 
-### 阶段 4：非流式响应方向三协议解码/编码
+1. `annotations` 的 response/stream 语义主跨协议路径已明显补强，但仍未达到完全覆盖
+2. richer stream event 虽已进入 IR，但尚未完全统一接管
+3. richer response / stream 的跨协议映射仍有明显空洞
+4. richer replay 与更强 E2E 证据仍不足
 
-状态：`完成`
+## P0/P1/P2 缺口核对
 
-证据：
+下表直接对应 [rosetta-gap-closure-plan.md](/home/icsl/gaiasec/gaiasec-llm-gateway/plan/rosetta-gap-closure-plan.md:1) 中列出的明确缺口。
 
-- codec：
-  - [protocol/response_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec.go:1)
-- tests：
-  - [protocol/response_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec_test.go:1)
-- handler 主路径复用：
-  - [handlers/chat_response.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/chat_response.go:483)
+状态定义：
 
-补充证据：
+- `已完成`：当前工作树与证据足以证明该项已满足阶段目标
+- `部分完成`：已有实现与证据，但仍有明显边界、协议对或验证空洞
+- `未完成`：当前证据仍不足以证明已满足阶段目标
 
-- `reasoning/thinking` 的 non-stream round-trip 已补充：
-  - [protocol/response_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec_test.go:1)
-- `vision/file` 的 non-stream round-trip 已补充：
-  - [protocol/response_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec_test.go:1)
+### P0
 
-### 阶段 5：流式事件方向三协议解码/编码
+| 缺口 | 当前状态 | 依据 |
+| --- | --- | --- |
+| Responses 非 function 工具类型未打通 | `部分完成` | 已有 `custom_tool_call/mcp_call/web_search_call/image_generation_call` 的 IR、handler mock 与部分 stream/mock evidence；但更广 built-in tool 与真实上游覆盖仍不足 |
+| Responses output item 类型过窄 | `部分完成` | 已补 `custom_tool_call/mcp_call/web_search_call/image_generation_call/compaction` 的 same-protocol 与部分跨协议证据；仍非全覆盖 |
+| 顶层 request provider fields 未统一保留与回放 | `部分完成` | Responses/Chat/Anthropic 主要字段已保留；更细 provider-specific 语义与跨协议回放仍未完全证明 |
 
-状态：`完成`
+### P1
 
-证据：
+| 缺口 | 当前状态 | 依据 |
+| --- | --- | --- |
+| `refusal` 未作为一等响应语义建模 | `部分完成` | non-stream、stream 与日志层均已有主路径证据；其余协议对和更广真实场景仍不足 |
+| `annotations` / citation 未建模 | `部分完成` | non-stream、`responses -> chat stream`、日志聚合已有证据；全协议对覆盖仍不足 |
+| Responses / Chat audio 输出未建模 | `部分完成` | non-stream、`chat <-> responses stream` 与日志聚合已有证据；更广真实场景不足 |
+| reasoning 的 response/stream 语义仍偏最小实现 | `部分完成` | `reasoning/thinking` 的 non-stream、stream、real smoke 已显著补强；统一 richer event 生命周期仍不完整 |
+| structured output 在 response/stream 侧缺少更强约束与测试 | `部分完成` | chat/responses non-stream 与真实 upstream structured output 已有证据；`gpt-5.2` 上的 `previous_response_id + structured output` stream 也已有真实成功案例，但整体 stream structured coverage 仍不足 |
 
-- 纯 stream codec：
-  - [protocol/stream_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_codec.go:1)
-- Responses upstream stateful stream codec：
-  - [protocol/stream_stateful_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_stateful_codec.go:1)
-- Anthropic inbound stream codec：
-  - [protocol/stream_anthropic_codec.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_anthropic_codec.go:1)
-- fixture/golden 风格测试：
-  - [protocol/stream_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_codec_test.go:1)
-  - [protocol/stream_stateful_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_stateful_codec_test.go:1)
-  - [protocol/stream_anthropic_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_anthropic_codec_test.go:1)
-  - [protocol/stream_fixtures_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/stream_fixtures_test.go:1)
-- handler 主路径调用：
-  - [handlers/chat_response.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/chat_response.go:689)
+### P2
 
-### 阶段 6：统一 dispatch 替换旧链路
+| 缺口 | 当前状态 | 依据 |
+| --- | --- | --- |
+| 多模态 stream 语义链不完整 | `未完成` | vision/file 真实 upstream 已分类为当前模型限制，但多模态 stream 本身仍无完整语义链证据 |
+| richer stream event 类型未建模 | `部分完成` | `IRStreamEvent` 与 `stream_ir.go` 已落地，并已把 `reasoning/tool/annotation/audio` 的一部分 lifecycle 统一归一化；但未完全统一接管所有包装/聚合与更细事件类型 |
+| 日志层还未针对高级 item 类型做结构化保留 | `部分完成` | semantic summary 已可见较多 richer 语义；非 chat-like richer item 与 replay/stream 聚合仍未全覆盖 |
 
-状态：`完成`
+## 当前可支撑的结论
 
-证据：
+当前仓库可以支撑以下结论：
 
-- [handlers/protocol_handler.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_handler.go:27)
-- [handlers/chat_handler.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/chat_handler.go:31)
+- 该目标**已取得大幅进展**
+- 请求、非流式响应、关键流式主路径已有较强证据
+- 但还**不能**声称 `plan/rosetta-gap-closure-plan.md` 已完成
 
-### 阶段 7：能力位校验与降级策略
+如果后续要宣称完成，至少还需要补：
 
-状态：`完成`
-
-证据：
-
-- [handlers/protocol_capabilities.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_capabilities.go:1)
-- [handlers/protocol_handler_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/handlers/protocol_handler_test.go:764)
-
-说明：
-
-- `tools` / `json_schema` / `reasoning` / `vision` / `stream` 走显式拒绝
-- `parallel_tool_calls` 走自动收敛
-
-### 阶段 8：清理旧实现
-
-状态：`完成`
-
-证据：
-
-- 文档更新：
-  - [README.md](/home/icsl/gaiasec/gaiasec-llm-gateway/README.md:1)
-  - [ARCHITECTURE.md](/home/icsl/gaiasec/gaiasec-llm-gateway/ARCHITECTURE.md:1)
-- 旧 `handlers/responses_converter.go` 已删除
-- 旧 `dispatchResponsesRequest` / `dispatchAnthropicRequest` 已删除
-- handler 中已清理大量被 `protocol/` 取代的 stream helper
-
-## 语义完整性强约束审计
-
-### 系统指令
-
-状态：`已支持`
-
-证据：
-
-- request codec tests：
-  - [protocol/request_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/request_codec_test.go:1)
-
-### Tool 定义与 tool choice
-
-状态：`完成（第一阶段目标）`
-
-证据：
-
-- function tools 与主流 `tool_choice` 路径已覆盖
-
-### Tool call / tool result
-
-状态：`已支持主路径`
-
-证据：
-
-- request / response / stream tests 分散存在于 `protocol/*_test.go` 与 `handlers/protocol_handler_test.go`
-
-### Reasoning / thinking
-
-状态：`完成（阶段目标）`
-
-证据：
-
-- request codec 保留 `reasoning`
-- non-stream response codec round-trip 保留 `reasoning_content` / `thinking`
-- stream codec 支持 reasoning delta
-
-### Structured output
-
-状态：`完成（阶段目标）`
-
-证据：
-
-- request codec round-trip 保留 `json_schema`
-- `chat -> responses` / `responses -> chat` 集成测试保留 `json_schema` 语义
-- 不支持时显式拒绝
-
-### 流式 usage / finish reason
-
-状态：`已支持主路径`
-
-证据：
-
-- `protocol/stream_*_test.go`
-
-### 多模态
-
-状态：`完成（阶段目标）`
-
-证据：
-
-- request codec 已具备 Chat / Responses / Anthropic 的多模态 round-trip 测试：
-  - [protocol/request_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/request_codec_test.go:1)
-- non-stream response codec 已具备 Chat / Responses / Anthropic 的 image/file round-trip 测试：
-  - [protocol/response_codec_test.go](/home/icsl/gaiasec/gaiasec-llm-gateway/protocol/response_codec_test.go:1)
-
-## 最终结论
-
-当前实现已经满足该执行计划的阶段目标与验收要求：
-
-- 统一入口与统一分发已落地
-- `protocol/` 已承载 request / response / stream 的核心 codec
-- 三协议请求、非流式响应、六条关键流式路径均有代码与测试证据
-- 能力位校验与降级策略已生效
-- 文档、兼容矩阵、完成清单、前端配置页面均已更新
-- 后端测试与前端构建均通过
-
-因此，**该目标可判定为完成**。
+- `annotations` response/stream 的更完整跨协议实现或显式拒绝策略
+- richer stream event 的剩余空洞
+- Phase 7 计划项的更完整验证证据

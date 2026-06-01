@@ -28,13 +28,17 @@ type AnthropicOutboundState struct {
 	MessageStarted   bool
 	TextStarted      bool
 	ReasoningStarted bool
+	RicherBlockBase   int
+	AnnotationSent    bool
+	RefusalSent       bool
+	AudioSent         bool
 	ToolBlocks       map[int]responsesToolState
 	PendingFinish    string
 	PendingUsage     map[string]interface{}
 }
 
 func NewAnthropicOutboundState() *AnthropicOutboundState {
-	return &AnthropicOutboundState{ToolBlocks: make(map[int]responsesToolState)}
+	return &AnthropicOutboundState{ToolBlocks: make(map[int]responsesToolState), RicherBlockBase: 1000}
 }
 
 func ChatChunksFromResponsesFrame(frame SSEFrame, state *ResponsesStreamState) ([]map[string]interface{}, bool) {
@@ -50,6 +54,10 @@ func ChatChunksFromResponsesFrame(frame SSEFrame, state *ResponsesStreamState) (
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
 		return nil, false
+	}
+	var irEvent IRStreamEvent
+	if events := IRStreamEventsFromResponsesFrame(frame); len(events) > 0 {
+		irEvent = events[0]
 	}
 	eventType := frame.Event
 	if eventType == "" {
@@ -84,10 +92,10 @@ func ChatChunksFromResponsesFrame(frame SSEFrame, state *ResponsesStreamState) (
 				})
 				state.RoleSent = true
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call", "mcp_call", "web_search_call", "file_search_call", "image_generation_call", "computer_call", "code_interpreter_call", "local_shell_call", "shell_call", "apply_patch_call":
 			outputIndex := numberToIntDefault(payload["output_index"])
 			toolID := firstNonEmpty(stringValue(item["call_id"]), stringValue(item["id"]))
-			toolName := stringValue(item["name"])
+			toolName := firstNonEmpty(stringValue(item["name"]), stringValue(item["type"]))
 			state.Tools[outputIndex] = responsesToolState{ID: toolID, Name: toolName}
 			state.SawToolCall = true
 			chunks = append(chunks, map[string]interface{}{
@@ -132,7 +140,146 @@ func ChatChunksFromResponsesFrame(frame SSEFrame, state *ResponsesStreamState) (
 			"model":   state.Model,
 			"choices": []map[string]interface{}{{
 				"index": 0,
-				"delta": map[string]interface{}{"content": stringValue(payload["delta"])},
+				"delta": map[string]interface{}{"content": firstNonEmpty(irEvent.Text, irEvent.Delta)},
+			}},
+		})
+	case "response.reasoning.delta":
+		if !state.RoleSent {
+			chunks = append(chunks, map[string]interface{}{
+				"id":      state.ResponseID,
+				"object":  "chat.completion.chunk",
+				"created": 0,
+				"model":   state.Model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{"role": "assistant"},
+				}},
+			})
+			state.RoleSent = true
+		}
+		chunks = append(chunks, map[string]interface{}{
+			"id":      state.ResponseID,
+			"object":  "chat.completion.chunk",
+			"created": 0,
+			"model":   state.Model,
+			"choices": []map[string]interface{}{{
+				"index": 0,
+				"delta": map[string]interface{}{"reasoning_content": firstNonEmpty(irEvent.Text, irEvent.Delta)},
+			}},
+		})
+	case "response.content_part.done":
+		part, _ := payload["part"].(map[string]interface{})
+		if stringValue(part["type"]) == "output_text" {
+			annotations := decodeIRAnnotations(irEvent.Annotations)
+			if len(annotations) == 0 {
+				annotations, _ = part["annotations"].([]interface{})
+			}
+			if len(annotations) > 0 {
+				if !state.RoleSent {
+					chunks = append(chunks, map[string]interface{}{
+						"id":      state.ResponseID,
+						"object":  "chat.completion.chunk",
+						"created": 0,
+						"model":   state.Model,
+						"choices": []map[string]interface{}{{
+							"index": 0,
+							"delta": map[string]interface{}{"role": "assistant"},
+						}},
+					})
+					state.RoleSent = true
+				}
+				chunks = append(chunks, map[string]interface{}{
+					"id":      state.ResponseID,
+					"object":  "chat.completion.chunk",
+					"created": 0,
+					"model":   state.Model,
+					"choices": []map[string]interface{}{{
+						"index": 0,
+						"delta": map[string]interface{}{
+							"annotations": annotations,
+						},
+					}},
+				})
+			}
+		}
+	case "response.annotation.added":
+		annotations := decodeIRAnnotations(irEvent.Annotations)
+		if len(annotations) == 0 {
+			annotations, _ = payload["annotations"].([]interface{})
+		}
+		if len(annotations) > 0 {
+			if !state.RoleSent {
+				chunks = append(chunks, map[string]interface{}{
+					"id":      state.ResponseID,
+					"object":  "chat.completion.chunk",
+					"created": 0,
+					"model":   state.Model,
+					"choices": []map[string]interface{}{{
+						"index": 0,
+						"delta": map[string]interface{}{"role": "assistant"},
+					}},
+				})
+				state.RoleSent = true
+			}
+			chunks = append(chunks, map[string]interface{}{
+				"id":      state.ResponseID,
+				"object":  "chat.completion.chunk",
+				"created": 0,
+				"model":   state.Model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"annotations": annotations,
+					},
+				}},
+			})
+		}
+	case "response.refusal.delta":
+		if !state.RoleSent {
+			chunks = append(chunks, map[string]interface{}{
+				"id":      state.ResponseID,
+				"object":  "chat.completion.chunk",
+				"created": 0,
+				"model":   state.Model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{"role": "assistant"},
+				}},
+			})
+			state.RoleSent = true
+		}
+		chunks = append(chunks, map[string]interface{}{
+			"id":      state.ResponseID,
+			"object":  "chat.completion.chunk",
+			"created": 0,
+			"model":   state.Model,
+			"choices": []map[string]interface{}{{
+				"index": 0,
+				"delta": map[string]interface{}{"refusal": firstNonEmpty(irEvent.Refusal, irEvent.Delta)},
+			}},
+		})
+	case "response.audio.delta":
+		if !state.RoleSent {
+			chunks = append(chunks, map[string]interface{}{
+				"id":      state.ResponseID,
+				"object":  "chat.completion.chunk",
+				"created": 0,
+				"model":   state.Model,
+				"choices": []map[string]interface{}{{
+					"index": 0,
+					"delta": map[string]interface{}{"role": "assistant"},
+				}},
+			})
+			state.RoleSent = true
+		}
+		chunks = append(chunks, map[string]interface{}{
+			"id":      state.ResponseID,
+			"object":  "chat.completion.chunk",
+			"created": 0,
+			"model":   state.Model,
+			"choices": []map[string]interface{}{{
+				"index": 0,
+				"delta": map[string]interface{}{"audio": decodeIRAudio(irEvent.Audio, payload["audio"])},
 			}},
 		})
 	case "response.function_call_arguments.delta":
@@ -168,9 +315,12 @@ func ChatChunksFromResponsesFrame(frame SSEFrame, state *ResponsesStreamState) (
 		}
 	case "response.completed":
 		response, _ := payload["response"].(map[string]interface{})
-		state.ResponseID = stringValue(response["id"])
+		state.ResponseID = firstNonEmpty(irEvent.ItemID, stringValue(response["id"]))
 		state.Model = stringValue(response["model"])
-		usage, _ := response["usage"].(map[string]interface{})
+		usage := decodeIRUsage(irEvent.Usage)
+		if len(usage) == 0 {
+			usage, _ = response["usage"].(map[string]interface{})
+		}
 		finishReason := "stop"
 		if state.SawToolCall {
 			finishReason = "tool_calls"
@@ -195,6 +345,39 @@ func ChatChunksFromResponsesFrame(frame SSEFrame, state *ResponsesStreamState) (
 	return chunks, false
 }
 
+func decodeIRAnnotations(raw json.RawMessage) []interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	var annotations []interface{}
+	if err := json.Unmarshal(raw, &annotations); err != nil {
+		return nil
+	}
+	return annotations
+}
+
+func decodeIRAudio(raw json.RawMessage, fallback interface{}) interface{} {
+	if len(raw) == 0 {
+		return fallback
+	}
+	var audio interface{}
+	if err := json.Unmarshal(raw, &audio); err != nil {
+		return fallback
+	}
+	return audio
+}
+
+func decodeIRUsage(raw json.RawMessage) map[string]interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	var usage map[string]interface{}
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return nil
+	}
+	return usage
+}
+
 func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundState) []SSEFrame {
 	if state == nil {
 		state = NewAnthropicOutboundState()
@@ -208,6 +391,10 @@ func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundS
 	var payload map[string]interface{}
 	if err := json.Unmarshal([]byte(frame.Data), &payload); err != nil {
 		return nil
+	}
+	var irEvent IRStreamEvent
+	if events := IRStreamEventsFromResponsesFrame(frame); len(events) > 0 {
+		irEvent = events[0]
 	}
 	eventType := frame.Event
 	if eventType == "" {
@@ -287,9 +474,9 @@ func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundS
 					}
 				}
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call", "mcp_call", "web_search_call", "file_search_call", "image_generation_call", "computer_call", "code_interpreter_call", "local_shell_call", "shell_call", "apply_patch_call":
 			toolID := firstNonEmpty(stringValue(item["call_id"]), stringValue(item["id"]))
-			toolName := stringValue(item["name"])
+			toolName := firstNonEmpty(stringValue(item["name"]), stringValue(item["type"]))
 			state.ToolBlocks[outputIndex] = responsesToolState{ID: toolID, Name: toolName}
 			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
 				"type":  "content_block_start",
@@ -323,9 +510,87 @@ func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundS
 			"index": 0,
 			"delta": map[string]interface{}{
 				"type": "text_delta",
-				"text": stringValue(payload["delta"]),
+				"text": firstNonEmpty(irEvent.Text, irEvent.Delta),
 			},
 		}))
+	case "response.reasoning.delta":
+		if state.MessageID == "" {
+			state.MessageID = firstNonEmpty(stringValue(payload["response_id"]), stringValue(payload["id"]))
+		}
+		ensureStart()
+		if !state.ReasoningStarted {
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": 1,
+				"content_block": map[string]interface{}{
+					"type":      "thinking",
+					"thinking":  "",
+					"signature": "",
+				},
+			}))
+			state.ReasoningStarted = true
+		}
+		frames = append(frames, anthropicFrame("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": 1,
+			"delta": map[string]interface{}{
+				"type":     "thinking_delta",
+				"thinking": firstNonEmpty(irEvent.Text, irEvent.Delta),
+			},
+		}))
+	case "response.refusal.delta":
+		if state.MessageID == "" {
+			state.MessageID = firstNonEmpty(stringValue(payload["response_id"]), stringValue(payload["id"]))
+		}
+		ensureStart()
+		if !state.RefusalSent {
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": state.RicherBlockBase + 1,
+				"content_block": map[string]interface{}{
+					"type":    "text",
+					"text":    firstNonEmpty(irEvent.Refusal, irEvent.Delta),
+					"refusal": firstNonEmpty(irEvent.Refusal, irEvent.Delta),
+				},
+			}))
+			state.RefusalSent = true
+		}
+	case "response.annotation.added":
+		ensureStart()
+		var annotations []interface{}
+		if len(irEvent.Annotations) > 0 {
+			_ = json.Unmarshal(irEvent.Annotations, &annotations)
+		}
+		if len(annotations) == 0 {
+			annotations, _ = payload["annotations"].([]interface{})
+		}
+		if len(annotations) > 0 {
+			state.AnnotationSent = true
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": state.RicherBlockBase,
+				"content_block": map[string]interface{}{
+					"type":        "text",
+					"text":        "",
+					"annotations": annotations,
+				},
+			}))
+		}
+	case "response.audio.delta":
+		ensureStart()
+		audio := decodeIRAudio(irEvent.Audio, payload["audio"])
+		if audio != nil {
+			state.AudioSent = true
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": state.RicherBlockBase + 2,
+				"content_block": map[string]interface{}{
+					"type":  "text",
+					"text":  "",
+					"audio": audio,
+				},
+			}))
+		}
 	case "response.function_call_arguments.delta":
 		if state.MessageID == "" {
 			state.MessageID = firstNonEmpty(stringValue(payload["response_id"]), stringValue(payload["id"]))
@@ -342,7 +607,8 @@ func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundS
 		}))
 	case "response.output_item.done":
 		item, _ := payload["item"].(map[string]interface{})
-		if stringValue(item["type"]) == "function_call" {
+		switch stringValue(item["type"]) {
+		case "function_call", "custom_tool_call", "mcp_call", "web_search_call", "file_search_call", "image_generation_call", "computer_call", "code_interpreter_call", "local_shell_call", "shell_call", "apply_patch_call":
 			state.PendingFinish = "tool_calls"
 		}
 	case "response.function_call_arguments.done":
@@ -352,6 +618,9 @@ func AnthropicEventsFromResponsesFrame(frame SSEFrame, state *AnthropicOutboundS
 		state.MessageID = stringValue(response["id"])
 		state.Model = stringValue(response["model"])
 		usage, _ := response["usage"].(map[string]interface{})
+		if state.PendingFinish == "" && len(state.ToolBlocks) > 0 {
+			state.PendingFinish = "tool_calls"
+		}
 		if state.PendingFinish == "" {
 			state.PendingFinish = "stop"
 		}
@@ -369,6 +638,7 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 		state = NewAnthropicOutboundState()
 	}
 	frames := make([]SSEFrame, 0)
+	irEvents := IRStreamEventsFromChatChunk(chatChunk)
 	if !state.MessageStarted {
 		state.MessageID = stringValue(chatChunk["id"])
 		state.Model = stringValue(chatChunk["model"])
@@ -393,7 +663,7 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 			continue
 		}
 		delta, _ := choice["delta"].(map[string]interface{})
-		if reasoning := stringValue(delta["reasoning_content"]); reasoning != "" {
+		if reasoning := firstNonEmpty(findIRTextDelta(irEvents, "reasoning.delta", 0), stringValue(delta["reasoning_content"])); reasoning != "" {
 			if !state.ReasoningStarted {
 				frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
 					"type":  "content_block_start",
@@ -415,7 +685,7 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 				},
 			}))
 		}
-		if content := stringValue(delta["content"]); content != "" {
+		if content := firstNonEmpty(findIRTextDelta(irEvents, "output_text.delta", 0), stringValue(delta["content"])); content != "" {
 			if state.ReasoningStarted {
 				frames = append(frames, anthropicFrame("content_block_stop", map[string]interface{}{
 					"type":  "content_block_stop",
@@ -440,6 +710,39 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 				"delta": map[string]interface{}{
 					"type": "text_delta",
 					"text": content,
+				},
+			}))
+		}
+		if annotations := findIRAnnotations(irEvents, 0); len(annotations) > 0 {
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": state.RicherBlockBase,
+				"content_block": map[string]interface{}{
+					"type":        "text",
+					"text":        "",
+					"annotations": annotations,
+				},
+			}))
+		}
+		if refusal := firstNonEmpty(findIRRefusalDelta(irEvents, 0), stringValue(delta["refusal"])); refusal != "" {
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": state.RicherBlockBase + 1,
+				"content_block": map[string]interface{}{
+					"type":    "text",
+					"text":    refusal,
+					"refusal": refusal,
+				},
+			}))
+		}
+		if audio := findIRAudio(irEvents, 0); len(audio) > 0 {
+			frames = append(frames, anthropicFrame("content_block_start", map[string]interface{}{
+				"type":  "content_block_start",
+				"index": state.RicherBlockBase + 2,
+				"content_block": map[string]interface{}{
+					"type":  "text",
+					"text":  "",
+					"audio": audio,
 				},
 			}))
 		}
@@ -472,7 +775,7 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 						"index": index + 2,
 						"delta": map[string]interface{}{
 							"type":         "input_json_delta",
-							"partial_json": args,
+							"partial_json": firstNonEmpty(findIRToolArguments(irEvents, index), args),
 						},
 					}))
 				}
@@ -485,6 +788,16 @@ func AnthropicFramesFromChatChunk(chatChunk map[string]interface{}, state *Anthr
 
 	if usage, ok := chatChunk["usage"].(map[string]interface{}); ok && usage != nil {
 		state.PendingUsage = usage
+	}
+	for _, event := range irEvents {
+		if event.Type == "usage" && len(event.Usage) > 0 {
+			if decoded := decodeIRUsage(event.Usage); len(decoded) > 0 {
+				state.PendingUsage = decoded
+			}
+		}
+		if event.Type == "response.completed" && event.FinishReason != "" {
+			state.PendingFinish = event.FinishReason
+		}
 	}
 
 	return frames
@@ -512,6 +825,27 @@ func flushAnthropicFinish(state *AnthropicOutboundState, includeStop bool) []SSE
 			"index": 1,
 		}))
 		state.ReasoningStarted = false
+	}
+	if state.AnnotationSent {
+		frames = append(frames, anthropicFrame("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": state.RicherBlockBase,
+		}))
+		state.AnnotationSent = false
+	}
+	if state.RefusalSent {
+		frames = append(frames, anthropicFrame("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": state.RicherBlockBase + 1,
+		}))
+		state.RefusalSent = false
+	}
+	if state.AudioSent {
+		frames = append(frames, anthropicFrame("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": state.RicherBlockBase + 2,
+		}))
+		state.AudioSent = false
 	}
 	for index := range state.ToolBlocks {
 		frames = append(frames, anthropicFrame("content_block_stop", map[string]interface{}{
@@ -545,4 +879,13 @@ func flushAnthropicFinish(state *AnthropicOutboundState, includeStop bool) []SSE
 func anthropicFrame(event string, data map[string]interface{}) SSEFrame {
 	body, _ := json.Marshal(data)
 	return SSEFrame{Event: event, Data: string(body)}
+}
+
+func findIRToolArguments(events []IRStreamEvent, index int) string {
+	for _, event := range events {
+		if event.Type == "tool_call.delta" && event.Index == index {
+			return event.Arguments
+		}
+	}
+	return ""
 }

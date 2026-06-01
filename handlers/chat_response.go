@@ -100,13 +100,20 @@ type openAIStreamLogResult struct {
 	ResponseJSON    string
 	ContentLength   int
 	ReasoningLength int
+	RefusalLength   int
+	AudioChunks     int
+	AnnotationCount int
 	DataEvents      int
 	ContentChunks   int
 	ReasoningChunks int
+	RefusalChunks   int
 	ToolCallChunks  int
 	UsageChunks     int
 	DoneSeen        bool
 	ToolCalls       []openAIStreamToolCall
+	Refusal         string
+	Audio           map[string]interface{}
+	Annotations     []interface{}
 }
 
 type openAIStreamToolCall struct {
@@ -123,6 +130,9 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 	result := openAIStreamLogResult{}
 	var contentOnly strings.Builder
 	var reasoningContentOnly strings.Builder
+	var refusalOnly strings.Builder
+	var audioPayload map[string]interface{}
+	var annotationsPayload []interface{}
 
 	var firstID, firstObject, firstModel string
 	var firstCreated int64
@@ -159,103 +169,87 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 			continue
 		}
 		result.DataEvents++
-
-		var streamResponse struct {
-			ID      string `json:"id"`
-			Object  string `json:"object"`
-			Created int64  `json:"created"`
-			Model   string `json:"model"`
-			Choices []struct {
-				Index int `json:"index"`
-				Delta struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
-					ToolCalls        []struct {
-						Index    int    `json:"index"`
-						ID       string `json:"id"`
-						Type     string `json:"type"`
-						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"delta"`
-				FinishReason string      `json:"finish_reason"`
-				Logprobs     interface{} `json:"logprobs"`
-			} `json:"choices"`
-			Usage struct {
-				PromptTokens       int `json:"prompt_tokens"`
-				CompletionTokens   int `json:"completion_tokens"`
-				TotalTokens        int `json:"total_tokens"`
-				PromptTokensDetail struct {
-					CachedTokens int `json:"cached_tokens"`
-				} `json:"prompt_tokens_detail"`
-				PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-				PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
-			} `json:"usage"`
-		}
-
-		if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err != nil {
+		var chatChunk map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonStr), &chatChunk); err != nil {
 			log.WithError(err).Debug("Skipping malformed stream chunk")
 			continue
 		}
+		irEvents := protocol.IRStreamEventsFromChatChunk(chatChunk)
 
-		if !hasMetadata && streamResponse.ID != "" {
-			firstID = streamResponse.ID
-			firstObject = streamResponse.Object
-			firstCreated = streamResponse.Created
-			firstModel = streamResponse.Model
+		if !hasMetadata && stringValue(chatChunk["id"]) != "" {
+			firstID = stringValue(chatChunk["id"])
+			firstObject = stringValue(chatChunk["object"])
+			firstCreated = numberValueToInt64(chatChunk["created"])
+			firstModel = stringValue(chatChunk["model"])
 			hasMetadata = true
 		}
 
-		if streamResponse.Usage.TotalTokens > 0 || streamResponse.Usage.PromptTokens > 0 || streamResponse.Usage.CompletionTokens > 0 {
-			result.UsageChunks++
-			lastUsage.PromptTokens = streamResponse.Usage.PromptTokens
-			lastUsage.CompletionTokens = streamResponse.Usage.CompletionTokens
-			lastUsage.TotalTokens = streamResponse.Usage.TotalTokens
-			lastUsage.CachedTokens = streamResponse.Usage.PromptTokensDetail.CachedTokens
-			lastUsage.PromptCacheHitTokens = streamResponse.Usage.PromptCacheHitTokens
-			lastUsage.PromptCacheMissTokens = streamResponse.Usage.PromptCacheMissTokens
-		}
-
-		if len(streamResponse.Choices) == 0 {
-			continue
-		}
-		if streamResponse.Choices[0].Delta.Content != "" {
-			contentOnly.WriteString(streamResponse.Choices[0].Delta.Content)
-			result.ContentChunks++
-			sawLoggablePayload = true
-		}
-		if streamResponse.Choices[0].Delta.ReasoningContent != "" {
-			reasoningContentOnly.WriteString(streamResponse.Choices[0].Delta.ReasoningContent)
-			result.ReasoningChunks++
-			sawLoggablePayload = true
-		}
-		if len(streamResponse.Choices[0].Delta.ToolCalls) > 0 {
-			result.ToolCallChunks++
-			sawLoggablePayload = true
-			for _, chunkToolCall := range streamResponse.Choices[0].Delta.ToolCalls {
-				toolCall := toolCallsByIndex[chunkToolCall.Index]
+		for _, event := range irEvents {
+			switch event.Type {
+			case "output_text.delta":
+				contentOnly.WriteString(firstNonEmptyString(event.Text, event.Delta))
+				result.ContentChunks++
+				sawLoggablePayload = true
+			case "reasoning.delta":
+				reasoningContentOnly.WriteString(firstNonEmptyString(event.Text, event.Delta))
+				result.ReasoningChunks++
+				sawLoggablePayload = true
+			case "refusal.delta":
+				refusalOnly.WriteString(firstNonEmptyString(event.Refusal, event.Delta))
+				result.RefusalChunks++
+				sawLoggablePayload = true
+			case "audio.delta":
+				if len(event.Audio) > 0 {
+					_ = json.Unmarshal(event.Audio, &audioPayload)
+					result.AudioChunks++
+					sawLoggablePayload = true
+				}
+			case "annotation.added":
+				if len(event.Annotations) > 0 {
+					_ = json.Unmarshal(event.Annotations, &annotationsPayload)
+					result.AnnotationCount = len(annotationsPayload)
+					sawLoggablePayload = true
+				}
+			case "tool_call.delta":
+				result.ToolCallChunks++
+				sawLoggablePayload = true
+				toolCall := toolCallsByIndex[event.Index]
 				if toolCall == nil {
-					toolCall = &openAIStreamToolCall{Index: chunkToolCall.Index}
-					toolCallsByIndex[chunkToolCall.Index] = toolCall
+					toolCall = &openAIStreamToolCall{Index: event.Index}
+					toolCallsByIndex[event.Index] = toolCall
 				}
-				if chunkToolCall.ID != "" {
-					toolCall.ID = chunkToolCall.ID
+				if event.ItemID != "" {
+					toolCall.ID = event.ItemID
 				}
-				if chunkToolCall.Type != "" {
-					toolCall.Type = chunkToolCall.Type
+				if toolType, ok := event.ProviderExtensions["type"].(string); ok && toolType != "" {
+					toolCall.Type = toolType
 				}
-				if chunkToolCall.Function.Name != "" {
-					toolCall.Function.Name = chunkToolCall.Function.Name
+				if name, ok := event.ProviderExtensions["name"].(string); ok && name != "" {
+					toolCall.Function.Name = name
 				}
-				if chunkToolCall.Function.Arguments != "" {
-					toolCall.Function.Arguments += chunkToolCall.Function.Arguments
+				if event.Arguments != "" {
+					toolCall.Function.Arguments += event.Arguments
+				}
+			case "response.completed":
+				if event.FinishReason != "" {
+					lastFinishReason = event.FinishReason
+				}
+			case "usage":
+				if len(event.Usage) > 0 {
+					var usage map[string]interface{}
+					if err := json.Unmarshal(event.Usage, &usage); err == nil {
+						result.UsageChunks++
+						lastUsage.PromptTokens = numberValueToInt(usage["prompt_tokens"])
+						lastUsage.CompletionTokens = numberValueToInt(usage["completion_tokens"])
+						lastUsage.TotalTokens = numberValueToInt(usage["total_tokens"])
+						if details, ok := usage["prompt_tokens_detail"].(map[string]interface{}); ok {
+							lastUsage.CachedTokens = numberValueToInt(details["cached_tokens"])
+						}
+						lastUsage.PromptCacheHitTokens = numberValueToInt(usage["prompt_cache_hit_tokens"])
+						lastUsage.PromptCacheMissTokens = numberValueToInt(usage["prompt_cache_miss_tokens"])
+					}
 				}
 			}
-		}
-		if streamResponse.Choices[0].FinishReason != "" {
-			lastFinishReason = streamResponse.Choices[0].FinishReason
 		}
 	}
 
@@ -300,6 +294,9 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 				Role             string                 `json:"role"`
 				Content          string                 `json:"content"`
 				ReasoningContent string                 `json:"reasoning_content,omitempty"`
+				Refusal          string                 `json:"refusal,omitempty"`
+				Audio            map[string]interface{} `json:"audio,omitempty"`
+				Annotations      []interface{}          `json:"annotations,omitempty"`
 				ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string      `json:"finish_reason"`
@@ -326,6 +323,9 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 				Role             string                 `json:"role"`
 				Content          string                 `json:"content"`
 				ReasoningContent string                 `json:"reasoning_content,omitempty"`
+				Refusal          string                 `json:"refusal,omitempty"`
+				Audio            map[string]interface{} `json:"audio,omitempty"`
+				Annotations      []interface{}          `json:"annotations,omitempty"`
 				ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string      `json:"finish_reason"`
@@ -337,11 +337,17 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 					Role             string                 `json:"role"`
 					Content          string                 `json:"content"`
 					ReasoningContent string                 `json:"reasoning_content,omitempty"`
+					Refusal          string                 `json:"refusal,omitempty"`
+					Audio            map[string]interface{} `json:"audio,omitempty"`
+					Annotations      []interface{}          `json:"annotations,omitempty"`
 					ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 				}{
 					Role:             "assistant",
 					Content:          contentOnly.String(),
 					ReasoningContent: reasoningContentOnly.String(),
+					Refusal:          refusalOnly.String(),
+					Audio:            audioPayload,
+					Annotations:      annotationsPayload,
 					ToolCalls:        result.ToolCalls,
 				},
 				FinishReason: finishReason,
@@ -365,6 +371,10 @@ func buildOpenAIStreamLogResponse(rawStream string) (openAIStreamLogResult, erro
 	result.ResponseJSON = string(respData)
 	result.ContentLength = contentOnly.Len()
 	result.ReasoningLength = reasoningContentOnly.Len()
+	result.RefusalLength = refusalOnly.Len()
+	result.Refusal = refusalOnly.String()
+	result.Audio = audioPayload
+	result.Annotations = annotationsPayload
 	return result, nil
 }
 
@@ -476,26 +486,57 @@ func lineHasOpenAIStreamToken(line string) bool {
 		return false
 	}
 
-	var streamResponse struct {
-		Choices []struct {
-			Delta struct {
-				Content          string            `json:"content"`
-				ReasoningContent string            `json:"reasoning_content"`
-				ToolCalls        []json.RawMessage `json:"tool_calls"`
-			} `json:"delta"`
-		} `json:"choices"`
-	}
-
-	if err := json.Unmarshal([]byte(jsonStr), &streamResponse); err != nil {
+	var chatChunk map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &chatChunk); err != nil {
 		return false
 	}
-	if len(streamResponse.Choices) == 0 {
+	events := protocol.IRStreamEventsFromChatChunk(chatChunk)
+	if len(events) == 0 {
 		return false
 	}
+	for _, event := range events {
+		switch event.Type {
+		case "output_text.delta", "reasoning.delta", "refusal.delta", "audio.delta", "annotation.added", "tool_call.delta":
+			return true
+		}
+	}
+	return false
+}
 
-	return streamResponse.Choices[0].Delta.Content != "" ||
-		streamResponse.Choices[0].Delta.ReasoningContent != "" ||
-		len(streamResponse.Choices[0].Delta.ToolCalls) > 0
+func numberValueToInt(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func numberValueToInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	default:
+		return 0
+	}
 }
 
 func (h *ChatHandler) handleResponsesNonStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) error {
@@ -512,6 +553,7 @@ func (h *ChatHandler) handleResponsesNonStreamResponse(w http.ResponseWriter, re
 
 	respBodyDecode, err := gzipDecode(respBody)
 	if err != nil {
+		respBodyDecode = respBody
 		reqLog.Response = string(respBody)
 	} else {
 		reqLog.Response = string(respBodyDecode)
@@ -677,19 +719,7 @@ func (h *ChatHandler) handleAnthropicFromResponsesNonStreamResponse(w http.Respo
 	if err != nil {
 		decodedBody = respBody
 	}
-	chatBody, err := convertResponsesResponseToChatResponse(decodedBody, config.ModelName)
-	if err != nil {
-		_, _ = w.Write(respBody)
-		reqLog.Response = string(decodedBody)
-		return nil
-	}
-	var chatResp map[string]interface{}
-	if err := json.Unmarshal(chatBody, &chatResp); err != nil {
-		_, _ = w.Write(respBody)
-		reqLog.Response = string(decodedBody)
-		return nil
-	}
-	anthropicBody, err := convertChatResponseToAnthropicResponse(chatResp, config.ModelName)
+	anthropicBody, err := convertResponsesResponseToAnthropicResponse(decodedBody, config.ModelName)
 	if err != nil {
 		_, _ = w.Write(respBody)
 		reqLog.Response = string(decodedBody)
@@ -895,10 +925,10 @@ func (h *ChatHandler) handleAnthropicFromChatStreamResponse(w http.ResponseWrite
 		if err := json.Unmarshal([]byte(dataStr), &chatChunk); err != nil {
 			continue
 		}
-		if lineHasOpenAIStreamToken(line) {
-			metrics.Record(time.Now())
-		}
 		for _, frame := range protocol.AnthropicFramesFromChatChunk(chatChunk, state) {
+			if anthropicFrameHasOutputToken(frame) {
+				metrics.Record(time.Now())
+			}
 			text := protocol.FormatSSEFrame(frame)
 			outStream.WriteString(text)
 			_, _ = w.Write([]byte(text))
@@ -935,7 +965,7 @@ func (h *ChatHandler) handleAnthropicFromResponsesStreamResponse(w http.Response
 		}
 		rawStream.WriteString(protocol.FormatSSEFrame(protocol.SSEFrame{Event: frame.Event, Data: frame.Data}))
 		for _, anthropicFrame := range protocol.AnthropicEventsFromResponsesFrame(frame, state) {
-			if anthropicFrame.Event == "content_block_delta" {
+			if anthropicFrameHasOutputToken(anthropicFrame) {
 				metrics.Record(time.Now())
 			}
 			text := protocol.FormatSSEFrame(anthropicFrame)
@@ -950,6 +980,19 @@ func (h *ChatHandler) handleAnthropicFromResponsesStreamResponse(w http.Response
 	reqLog.Response = outStream.String()
 	reqLog.FirstTokenLatency = metrics.FirstTokenLatency()
 	reqLog.AvgTokenLatency = metrics.AvgTokenLatency()
+}
+
+func anthropicFrameHasOutputToken(frame protocol.SSEFrame) bool {
+	for _, event := range protocol.IRStreamEventsFromAnthropicFrame(frame) {
+		switch event.Type {
+		case "output_text.delta", "reasoning.delta", "refusal.delta", "audio.delta", "annotation.added", "tool_call.start", "tool_call.delta":
+			return true
+		}
+	}
+	if frame.Event == "content_block_delta" {
+		return true
+	}
+	return false
 }
 
 func (h *ChatHandler) handleResponsesStreamResponse(w http.ResponseWriter, resp *http.Response, reqLog *models.RequestLog) {

@@ -40,6 +40,22 @@ const formatMetric = (value) => {
   if (!value) return '-';
   return `${Math.round(value)}ms`;
 };
+
+const semanticEntries = computed(() => {
+  const semantic = props.log?.semantic || {};
+  return [
+    { label: 'Protocol', value: semantic.protocol || '-' },
+    { label: 'Status', value: semantic.status || '-' },
+    { label: 'Finish', value: semantic.finish_reason || '-' },
+    { label: 'Output Types', value: (semantic.output_item_types || []).join(', ') || '-' },
+    { label: 'Tool Types', value: (semantic.tool_types || []).join(', ') || '-' },
+    { label: 'Tool Names', value: (semantic.tool_names || []).join(', ') || '-' },
+    { label: 'Reasoning', value: semantic.reasoning_summary || '-' },
+    { label: 'Refusal', value: semantic.refusal || (semantic.has_refusal ? 'yes' : '-') },
+    { label: 'Annotations', value: semantic.annotation_count ?? 0 },
+    { label: 'Audio', value: semantic.has_audio ? 'yes' : 'no' },
+  ];
+});
 </script>
 
 <template>
@@ -102,6 +118,13 @@ const formatMetric = (value) => {
             JSON
           </el-radio-button>
         </el-radio-group>
+      </div>
+
+      <div class="semantic-grid" v-if="log.semantic">
+        <div class="semantic-item" v-for="entry in semanticEntries" :key="entry.label">
+          <span class="label">{{ entry.label }}:</span>
+          <span class="value">{{ entry.value }}</span>
+        </div>
       </div>
 
       <template v-if="viewMode === 'visual'">
@@ -202,6 +225,33 @@ const formatMetric = (value) => {
   margin-bottom: 16px;
   display: flex;
   justify-content: flex-end;
+}
+
+.semantic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.semantic-item {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.semantic-item .label {
+  color: var(--el-text-color-secondary);
+}
+
+.semantic-item .value {
+  color: var(--el-text-color-primary);
+  word-break: break-word;
 }
 
 .view-mode-toggle :deep(.el-radio-button__inner) {

@@ -124,6 +124,14 @@ func TestModifyModelConfigKeepsExistingAPIKeyWhenBlank(t *testing.T) {
 		"supports_json_schema": true,
 		"supports_vision": true,
 		"supports_parallel_tool_calls": true,
+		"supports_refusal": true,
+		"supports_annotations": true,
+		"supports_audio_output": true,
+		"supports_web_search": true,
+		"supports_mcp": true,
+		"supports_code_interpreter": true,
+		"supports_image_generation": true,
+		"supports_prompt_cache": true,
 		"enabled": true
 	}`)
 	request := httptest.NewRequest(http.MethodPut, "/api/model-configs/1", bytes.NewReader(body))
@@ -156,8 +164,63 @@ func TestModifyModelConfigKeepsExistingAPIKeyWhenBlank(t *testing.T) {
 	if stored.UpstreamType != models.UpstreamTypeAnthropicMessages {
 		t.Fatalf("expected upstream type to be updated, got %q", stored.UpstreamType)
 	}
-	if !stored.SupportsParallelToolCalls || !stored.SupportsVision {
+	if !stored.SupportsParallelToolCalls || !stored.SupportsVision || !stored.SupportsWebSearch || !stored.SupportsPromptCache || !stored.SupportsAudioOutput {
 		t.Fatalf("expected capability flags to be updated, got %+v", stored)
+	}
+}
+
+func TestGetModelConfigsExposesExtendedCapabilityFlags(t *testing.T) {
+	db := newModelConfigTestDB(t)
+	if err := db.Create(&models.ModelConfig{
+		Name:                    "rich-capabilities",
+		ModelName:               "gpt-rich",
+		APIBaseURL:              "https://api.example.test",
+		APIKey:                  "secret-key",
+		SupportsRefusal:         true,
+		SupportsAnnotations:     true,
+		SupportsAudioOutput:     true,
+		SupportsWebSearch:       true,
+		SupportsMCP:             true,
+		SupportsCodeInterpreter: true,
+		SupportsImageGeneration: true,
+		SupportsPromptCache:     true,
+		Enabled:                 true,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed model config: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/model-configs", nil)
+	NewModelConfigHandler(db).GetModelConfigs(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload []map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to decode response body %q: %v", recorder.Body.String(), err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected one model config, got %d", len(payload))
+	}
+	for _, field := range []string{
+		"supports_refusal",
+		"supports_annotations",
+		"supports_audio_output",
+		"supports_web_search",
+		"supports_mcp",
+		"supports_code_interpreter",
+		"supports_image_generation",
+		"supports_prompt_cache",
+	} {
+		var enabled bool
+		if err := json.Unmarshal(payload[0][field], &enabled); err != nil {
+			t.Fatalf("expected field %s in response: %v", field, err)
+		}
+		if !enabled {
+			t.Fatalf("expected field %s to be true", field)
+		}
 	}
 }
 

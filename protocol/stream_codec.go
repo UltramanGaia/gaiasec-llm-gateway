@@ -18,19 +18,27 @@ type ResponsesStreamEvent struct {
 }
 
 type ChatToResponsesStreamState struct {
-	ResponseCreated bool
-	MessageItems    map[int]string
-	MessageText     map[int]string
-	ToolCalls       map[int]responsesToolState
-	ToolArgs        map[int]string
+	ResponseCreated    bool
+	MessageItems       map[int]string
+	MessageText        map[int]string
+	MessageReasoning   map[int]string
+	MessageAnnotations map[int][]interface{}
+	MessageRefusal     map[int]string
+	MessageAudio       map[int]map[string]interface{}
+	ToolCalls          map[int]responsesToolState
+	ToolArgs           map[int]string
 }
 
 func NewChatToResponsesStreamState() *ChatToResponsesStreamState {
 	return &ChatToResponsesStreamState{
-		MessageItems: make(map[int]string),
-		MessageText:  make(map[int]string),
-		ToolCalls:    make(map[int]responsesToolState),
-		ToolArgs:     make(map[int]string),
+		MessageItems:       make(map[int]string),
+		MessageText:        make(map[int]string),
+		MessageReasoning:   make(map[int]string),
+		MessageAnnotations: make(map[int][]interface{}),
+		MessageRefusal:     make(map[int]string),
+		MessageAudio:       make(map[int]map[string]interface{}),
+		ToolCalls:          make(map[int]responsesToolState),
+		ToolArgs:           make(map[int]string),
 	}
 }
 
@@ -88,6 +96,7 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 		state = NewChatToResponsesStreamState()
 	}
 	events := make([]ResponsesStreamEvent, 0)
+	irEvents := IRStreamEventsFromChatChunk(chatChunk)
 	responseID := stringValue(chatChunk["id"])
 	model := stringValue(chatChunk["model"])
 
@@ -140,6 +149,10 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 			if !ok {
 				continue
 			}
+			reasoningDelta := findIRTextDelta(irEvents, "reasoning.delta", idx)
+			refusalDelta := findIRRefusalDelta(irEvents, idx)
+			annotationDelta := findIRAnnotations(irEvents, idx)
+			audioDelta := findIRAudio(irEvents, idx)
 
 			itemID := state.MessageItems[idx]
 			if itemID == "" {
@@ -156,9 +169,9 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 						"output_index":    idx,
 						"item": map[string]interface{}{
 							"id":      itemID,
-							"type":   "message",
-							"status": "in_progress",
-							"role":   "assistant",
+							"type":    "message",
+							"status":  "in_progress",
+							"role":    "assistant",
 							"content": []interface{}{},
 						},
 					},
@@ -196,6 +209,129 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 						"content_index":   0,
 						"delta":           content,
 						"logprobs":        []interface{}{},
+					},
+				})
+			}
+
+			if reasoningDelta != "" {
+				reasoningItemID := itemID + "_reasoning"
+				if _, exists := state.MessageReasoning[idx]; !exists {
+					state.MessageReasoning[idx] = ""
+					events = append(events, ResponsesStreamEvent{
+						Event: "response.output_item.added",
+						Data: map[string]interface{}{
+							"type":            "response.output_item.added",
+							"sequence_number": seqNum,
+							"output_index":    idx + 50,
+							"item": map[string]interface{}{
+								"id":     reasoningItemID,
+								"type":   "reasoning",
+								"status": "in_progress",
+								"summary": []map[string]interface{}{{
+									"type": "summary_text",
+									"text": "",
+								}},
+							},
+						},
+					})
+				}
+				state.MessageReasoning[idx] += reasoningDelta
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.reasoning.delta",
+					Data: map[string]interface{}{
+						"type":            "response.reasoning.delta",
+						"sequence_number": seqNum,
+						"item_id":         reasoningItemID,
+						"output_index":    idx + 50,
+						"delta":           reasoningDelta,
+					},
+				})
+			}
+
+			if len(annotationDelta) > 0 {
+				state.MessageAnnotations[idx] = annotationDelta
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.annotation.added",
+					Data: map[string]interface{}{
+						"type":            "response.annotation.added",
+						"sequence_number": seqNum,
+						"item_id":         itemID,
+						"output_index":    idx,
+						"annotations":     annotationDelta,
+					},
+				})
+			}
+
+			if refusal := firstNonEmpty(refusalDelta, stringValue(delta["refusal"])); refusal != "" {
+				if _, exists := state.MessageRefusal[idx]; !exists {
+					state.MessageRefusal[idx] = ""
+					refusalIndex := 1
+					if _, hasText := state.MessageText[idx]; !hasText {
+						refusalIndex = 0
+					}
+					events = append(events, ResponsesStreamEvent{
+						Event: "response.content_part.added",
+						Data: map[string]interface{}{
+							"type":            "response.content_part.added",
+							"sequence_number": seqNum,
+							"item_id":         itemID,
+							"output_index":    idx,
+							"content_index":   refusalIndex,
+							"part": map[string]interface{}{
+								"type":    "refusal",
+								"refusal": "",
+							},
+						},
+					})
+				}
+				state.MessageRefusal[idx] += refusal
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.refusal.delta",
+					Data: map[string]interface{}{
+						"type":            "response.refusal.delta",
+						"sequence_number": seqNum,
+						"item_id":         itemID,
+						"output_index":    idx,
+						"delta":           refusal,
+					},
+				})
+			}
+
+			audio := audioDelta
+			if len(audio) == 0 {
+				audio, _ = delta["audio"].(map[string]interface{})
+			}
+			if len(audio) > 0 {
+				state.MessageAudio[idx] = audio
+				audioIndex := 0
+				if _, hasText := state.MessageText[idx]; hasText {
+					audioIndex++
+				}
+				if _, hasRefusal := state.MessageRefusal[idx]; hasRefusal {
+					audioIndex++
+				}
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.content_part.added",
+					Data: map[string]interface{}{
+						"type":            "response.content_part.added",
+						"sequence_number": seqNum,
+						"item_id":         itemID,
+						"output_index":    idx,
+						"content_index":   audioIndex,
+						"part": map[string]interface{}{
+							"type":  "output_audio",
+							"audio": audio,
+						},
+					},
+				})
+				events = append(events, ResponsesStreamEvent{
+					Event: "response.audio.delta",
+					Data: map[string]interface{}{
+						"type":            "response.audio.delta",
+						"sequence_number": seqNum,
+						"item_id":         itemID,
+						"output_index":    idx,
+						"audio":           audio,
 					},
 				})
 			}
@@ -249,6 +385,7 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 
 			if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
 				if text, ok := state.MessageText[idx]; ok {
+					annotations := state.MessageAnnotations[idx]
 					events = append(events, ResponsesStreamEvent{
 						Event: "response.output_text.done",
 						Data: map[string]interface{}{
@@ -272,10 +409,74 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 							"part": map[string]interface{}{
 								"type":        "output_text",
 								"text":        text,
-								"annotations": []interface{}{},
+								"annotations": annotations,
 								"logprobs":    []interface{}{},
 							},
 						},
+					})
+				}
+				content := make([]map[string]interface{}, 0, 3)
+				if text, hasText := state.MessageText[idx]; hasText {
+					content = append(content, map[string]interface{}{
+						"type":        "output_text",
+						"text":        text,
+						"annotations": state.MessageAnnotations[idx],
+						"logprobs":    []interface{}{},
+					})
+				}
+				if reasoning, ok := state.MessageReasoning[idx]; ok && reasoning != "" {
+					events = append(events, ResponsesStreamEvent{
+						Event: "response.output_item.done",
+						Data: map[string]interface{}{
+							"type":            "response.output_item.done",
+							"sequence_number": seqNum,
+							"output_index":    idx + 50,
+							"item": map[string]interface{}{
+								"id":     itemID + "_reasoning",
+								"type":   "reasoning",
+								"status": "completed",
+								"summary": []map[string]interface{}{{
+									"type": "summary_text",
+									"text": reasoning,
+								}},
+							},
+						},
+					})
+				}
+				if refusal, ok := state.MessageRefusal[idx]; ok && refusal != "" {
+					refusalIndex := len(content)
+					events = append(events, ResponsesStreamEvent{
+						Event: "response.refusal.done",
+						Data: map[string]interface{}{
+							"type":            "response.refusal.done",
+							"sequence_number": seqNum,
+							"item_id":         itemID,
+							"output_index":    idx,
+							"content_index":   refusalIndex,
+							"refusal":         refusal,
+						},
+					})
+					content = append(content, map[string]interface{}{
+						"type":    "refusal",
+						"refusal": refusal,
+					})
+				}
+				if audio, ok := state.MessageAudio[idx]; ok && len(audio) > 0 {
+					audioIndex := len(content)
+					events = append(events, ResponsesStreamEvent{
+						Event: "response.audio.done",
+						Data: map[string]interface{}{
+							"type":            "response.audio.done",
+							"sequence_number": seqNum,
+							"item_id":         itemID,
+							"output_index":    idx,
+							"content_index":   audioIndex,
+							"audio":           audio,
+						},
+					})
+					content = append(content, map[string]interface{}{
+						"type":  "output_audio",
+						"audio": audio,
 					})
 				}
 				if finishReason == "tool_calls" {
@@ -297,16 +498,24 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 								"sequence_number": seqNum,
 								"output_index":    outputIndex,
 								"item": map[string]interface{}{
-									"id":      tool.ID,
-									"type":    "function_call",
-									"call_id": tool.ID,
-									"name":    tool.Name,
+									"id":        tool.ID,
+									"type":      "function_call",
+									"call_id":   tool.ID,
+									"name":      tool.Name,
 									"arguments": state.ToolArgs[outputIndex],
-									"status":  "completed",
+									"status":    "completed",
 								},
 							},
 						})
 					}
+				}
+				if len(content) == 0 {
+					content = append(content, map[string]interface{}{
+						"type":        "output_text",
+						"text":        state.MessageText[idx],
+						"annotations": state.MessageAnnotations[idx],
+						"logprobs":    []interface{}{},
+					})
 				}
 				events = append(events, ResponsesStreamEvent{
 					Event: "response.output_item.done",
@@ -316,15 +525,10 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 						"output_index":    idx,
 						"item": map[string]interface{}{
 							"id":      itemID,
-							"type":   "message",
-							"status": "completed",
-							"role":   "assistant",
-							"content": []map[string]interface{}{{
-								"type":        "output_text",
-								"text":        state.MessageText[idx],
-								"annotations": []interface{}{},
-								"logprobs":    []interface{}{},
-							}},
+							"type":    "message",
+							"status":  "completed",
+							"role":    "assistant",
+							"content": content,
 						},
 					},
 				})
@@ -333,6 +537,48 @@ func ConvertChatChunkToResponsesEventsStateful(chatChunk map[string]interface{},
 	}
 
 	return events
+}
+
+func findIRTextDelta(events []IRStreamEvent, eventType string, index int) string {
+	for _, event := range events {
+		if event.Type == eventType && event.Index == index {
+			return firstNonEmpty(event.Text, event.Delta)
+		}
+	}
+	return ""
+}
+
+func findIRRefusalDelta(events []IRStreamEvent, index int) string {
+	for _, event := range events {
+		if event.Type == "refusal.delta" && event.Index == index {
+			return firstNonEmpty(event.Refusal, event.Delta)
+		}
+	}
+	return ""
+}
+
+func findIRAnnotations(events []IRStreamEvent, index int) []interface{} {
+	for _, event := range events {
+		if event.Type == "annotation.added" && event.Index == index && len(event.Annotations) > 0 {
+			var annotations []interface{}
+			if err := json.Unmarshal(event.Annotations, &annotations); err == nil {
+				return annotations
+			}
+		}
+	}
+	return nil
+}
+
+func findIRAudio(events []IRStreamEvent, index int) map[string]interface{} {
+	for _, event := range events {
+		if event.Type == "audio.delta" && event.Index == index && len(event.Audio) > 0 {
+			var audio map[string]interface{}
+			if err := json.Unmarshal(event.Audio, &audio); err == nil {
+				return audio
+			}
+		}
+	}
+	return nil
 }
 
 func BuildResponsesCompletedEvent(id, model string, usage map[string]interface{}, outputText string, seqNum int64) ResponsesStreamEvent {

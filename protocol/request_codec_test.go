@@ -86,7 +86,7 @@ func TestChatRequestToolChoiceRoundTrip(t *testing.T) {
 	}
 }
 
-func TestChatRequestDropsUnsupportedBuiltInTools(t *testing.T) {
+func TestChatRequestPreservesBuiltInTools(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-tools-filter",
 		"messages":[{"role":"user","content":"hello"}],
@@ -103,8 +103,11 @@ func TestChatRequestDropsUnsupportedBuiltInTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
 	}
-	if len(ir.Tools) != 1 || ir.Tools[0].Name != "lookup" {
-		t.Fatalf("expected only function tool to survive filtering, got %+v", ir.Tools)
+	if len(ir.Tools) != 3 {
+		t.Fatalf("expected all tools to be preserved, got %+v", ir.Tools)
+	}
+	if ir.Tools[2].Type != "web_search" || len(ir.Tools[2].RawPayload) == 0 {
+		t.Fatalf("expected web_search raw payload preserved, got %+v", ir.Tools[2])
 	}
 
 	encoded, err := EncodeOpenAIChatRequest(ir, "backend-tools")
@@ -116,12 +119,12 @@ func TestChatRequestDropsUnsupportedBuiltInTools(t *testing.T) {
 		t.Fatalf("unmarshal encoded request: %v", err)
 	}
 	tools := payload["tools"].([]interface{})
-	if len(tools) != 1 {
-		t.Fatalf("expected only one encoded tool, got %+v", tools)
+	if len(tools) != 3 {
+		t.Fatalf("expected all tools to be re-encoded, got %+v", tools)
 	}
 }
 
-func TestChatRequestClearsToolChoiceWhenOnlyUnsupportedToolsRemain(t *testing.T) {
+func TestChatRequestKeepsToolChoiceWhenOnlyBuiltInToolsRemain(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-tools-filter-empty",
 		"messages":[{"role":"user","content":"hello"}],
@@ -137,14 +140,64 @@ func TestChatRequestClearsToolChoiceWhenOnlyUnsupportedToolsRemain(t *testing.T)
 	if err != nil {
 		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
 	}
-	if len(ir.Tools) != 0 {
-		t.Fatalf("expected unsupported tools to be dropped, got %+v", ir.Tools)
+	if len(ir.Tools) != 2 {
+		t.Fatalf("expected built-in tools to be preserved, got %+v", ir.Tools)
 	}
-	if len(ir.ToolChoice) != 0 {
-		t.Fatalf("expected tool_choice to be cleared when no tools remain, got %s", string(ir.ToolChoice))
+	if len(ir.ToolChoice) == 0 {
+		t.Fatalf("expected tool_choice to remain when tools remain")
 	}
-	if _, ok := ir.ProviderExtensions["parallel_tool_calls"]; ok {
-		t.Fatalf("expected parallel_tool_calls to be cleared when no tools remain")
+	if parallel, _ := ir.ProviderExtensions["parallel_tool_calls"].(bool); !parallel {
+		t.Fatalf("expected parallel_tool_calls to remain when tools remain")
+	}
+}
+
+func TestChatRequestPreservesRichProviderFields(t *testing.T) {
+	body := []byte(`{
+		"model":"chat-rich",
+		"messages":[{"role":"user","content":"hello"}],
+		"metadata":{"trace_id":"abc"},
+		"service_tier":"flex",
+		"modalities":["text","audio"],
+		"audio":{"voice":"alloy"},
+		"prediction":{"type":"content","content":"pong"},
+		"verbosity":{"level":"high"},
+		"web_search_options":{"search_context_size":"medium"},
+		"logprobs":true,
+		"top_logprobs":2,
+		"seed":7,
+		"n":2,
+		"frequency_penalty":0.1,
+		"presence_penalty":0.2,
+		"logit_bias":{"42":1}
+	}`)
+
+	ir, err := DecodeOpenAIChatRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeOpenAIChatRequest error: %v", err)
+	}
+	if ir.ServiceTier != "flex" || string(ir.Metadata) == "" {
+		t.Fatalf("expected service_tier and metadata preserved, got %+v", ir)
+	}
+	if _, ok := ir.ProviderExtensions["audio"]; !ok {
+		t.Fatalf("expected audio provider extension, got %+v", ir.ProviderExtensions)
+	}
+
+	encoded, err := EncodeOpenAIChatRequest(ir, "backend-chat-rich")
+	if err != nil {
+		t.Fatalf("EncodeOpenAIChatRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	if payload["service_tier"] != "flex" {
+		t.Fatalf("expected service_tier preserved, got %+v", payload["service_tier"])
+	}
+	if _, ok := payload["audio"].(map[string]interface{}); !ok {
+		t.Fatalf("expected audio payload preserved, got %+v", payload["audio"])
+	}
+	if payload["top_logprobs"] != float64(2) {
+		t.Fatalf("expected top_logprobs preserved, got %+v", payload["top_logprobs"])
 	}
 }
 
@@ -284,7 +337,7 @@ func TestResponsesRequestToolChoiceRoundTrip(t *testing.T) {
 	}
 }
 
-func TestResponsesRequestDropsUnsupportedBuiltInTools(t *testing.T) {
+func TestResponsesRequestPreservesBuiltInTools(t *testing.T) {
 	body := []byte(`{
 		"model":"resp-tools-filter",
 		"input":"hello",
@@ -301,8 +354,11 @@ func TestResponsesRequestDropsUnsupportedBuiltInTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeResponsesRequest error: %v", err)
 	}
-	if len(ir.Tools) != 1 || ir.Tools[0].Name != "lookup" {
-		t.Fatalf("expected only function tool to survive filtering, got %+v", ir.Tools)
+	if len(ir.Tools) != 3 {
+		t.Fatalf("expected all tools to be preserved, got %+v", ir.Tools)
+	}
+	if ir.Tools[2].Type != "web_search" || len(ir.Tools[2].RawPayload) == 0 {
+		t.Fatalf("expected web_search raw payload preserved, got %+v", ir.Tools[2])
 	}
 
 	encoded, err := EncodeResponsesRequest(ir, "backend-resp-tools")
@@ -314,8 +370,58 @@ func TestResponsesRequestDropsUnsupportedBuiltInTools(t *testing.T) {
 		t.Fatalf("unmarshal encoded request: %v", err)
 	}
 	tools := payload["tools"].([]interface{})
-	if len(tools) != 1 {
-		t.Fatalf("expected only one encoded tool, got %+v", tools)
+	if len(tools) != 3 {
+		t.Fatalf("expected all tools to be re-encoded, got %+v", tools)
+	}
+}
+
+func TestResponsesRequestPreservesRichProviderFields(t *testing.T) {
+	body := []byte(`{
+		"model":"resp-rich",
+		"instructions":"sys",
+		"input":"hello",
+		"previous_response_id":"resp_prev",
+		"include":["reasoning.encrypted_content"],
+		"metadata":{"trace_id":"abc"},
+		"service_tier":"priority",
+		"store":true,
+		"background":false,
+		"conversation":{"id":"conv_1"},
+		"prompt":{"id":"pmpt_1","version":"2"},
+		"prompt_cache_key":"cache-key",
+		"prompt_cache_retention":"persist"
+	}`)
+
+	ir, err := DecodeResponsesRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeResponsesRequest error: %v", err)
+	}
+	if ir.PreviousResponseID != "resp_prev" || ir.ServiceTier != "priority" {
+		t.Fatalf("expected rich fields in IR, got %+v", ir)
+	}
+	if ir.Store == nil || !*ir.Store || ir.Background == nil || *ir.Background {
+		t.Fatalf("expected store/background preserved, got store=%v background=%v", ir.Store, ir.Background)
+	}
+	if string(ir.Metadata) == "" || string(ir.Prompt) == "" || string(ir.Conversation) == "" {
+		t.Fatalf("expected metadata/prompt/conversation preserved, got %+v", ir)
+	}
+
+	encoded, err := EncodeResponsesRequest(ir, "backend-resp-rich")
+	if err != nil {
+		t.Fatalf("EncodeResponsesRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	if payload["previous_response_id"] != "resp_prev" {
+		t.Fatalf("expected previous_response_id preserved, got %+v", payload["previous_response_id"])
+	}
+	if payload["prompt_cache_key"] != "cache-key" || payload["prompt_cache_retention"] != "persist" {
+		t.Fatalf("expected prompt cache fields preserved, got %+v", payload)
+	}
+	if payload["service_tier"] != "priority" {
+		t.Fatalf("expected service_tier preserved, got %+v", payload["service_tier"])
 	}
 }
 
@@ -453,6 +559,40 @@ func TestAnthropicRequestToolChoiceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAnthropicRequestPreservesRichProviderFields(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-rich",
+		"system":"sys",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],
+		"metadata":{"trace_id":"abc"},
+		"service_tier":"priority",
+		"top_k":50
+	}`)
+
+	ir, err := DecodeAnthropicRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeAnthropicRequest error: %v", err)
+	}
+	if ir.ServiceTier != "priority" || string(ir.Metadata) == "" {
+		t.Fatalf("expected metadata/service_tier preserved, got %+v", ir)
+	}
+	if _, ok := ir.ProviderExtensions["top_k"]; !ok {
+		t.Fatalf("expected top_k provider extension, got %+v", ir.ProviderExtensions)
+	}
+
+	encoded, err := EncodeAnthropicRequest(ir, "backend-claude-rich")
+	if err != nil {
+		t.Fatalf("EncodeAnthropicRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	if payload["service_tier"] != "priority" || payload["top_k"] != float64(50) {
+		t.Fatalf("expected service_tier/top_k preserved, got %+v", payload)
+	}
+}
+
 func TestAnthropicRequestVisionRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"model":"claude-vision",
@@ -516,5 +656,61 @@ func TestAnthropicRequestFileRoundTrip(t *testing.T) {
 	content := payload["messages"].([]interface{})[0].(map[string]interface{})["content"].([]interface{})
 	if content[1].(map[string]interface{})["type"] != "document" {
 		t.Fatalf("expected document part to round-trip, got %+v", content[1])
+	}
+}
+
+func TestAnthropicRequestPreservesBlockLevelCacheControl(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-cache-control",
+		"messages":[
+			{"role":"user","content":[
+				{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}
+			]},
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"hello"},"cache_control":{"type":"ephemeral"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"call_1","content":"ok","cache_control":{"type":"ephemeral"}}
+			]}
+		]
+	}`)
+
+	ir, err := DecodeAnthropicRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeAnthropicRequest error: %v", err)
+	}
+	if len(ir.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %+v", ir.Messages)
+	}
+	if raw, ok := ir.Messages[0].Content[0].ProviderExtensions["raw"].(map[string]interface{}); !ok || raw["cache_control"] == nil {
+		t.Fatalf("expected user text raw block with cache_control, got %+v", ir.Messages[0].Content[0])
+	}
+	if raw, ok := ir.Messages[1].Content[0].ProviderExtensions["raw"].(map[string]interface{}); !ok || raw["cache_control"] == nil {
+		t.Fatalf("expected tool_use raw block with cache_control, got %+v", ir.Messages[1].Content[0])
+	}
+	if raw, ok := ir.Messages[2].Content[0].ProviderExtensions["raw"].(map[string]interface{}); !ok || raw["cache_control"] == nil {
+		t.Fatalf("expected tool_result raw block with cache_control, got %+v", ir.Messages[2].Content[0])
+	}
+
+	encoded, err := EncodeAnthropicRequest(ir, "backend-claude-cache-control")
+	if err != nil {
+		t.Fatalf("EncodeAnthropicRequest error: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	messages := payload["messages"].([]interface{})
+	userContent := messages[0].(map[string]interface{})["content"].([]interface{})
+	if userContent[0].(map[string]interface{})["cache_control"] == nil {
+		t.Fatalf("expected user text cache_control to round-trip, got %+v", userContent[0])
+	}
+	assistantContent := messages[1].(map[string]interface{})["content"].([]interface{})
+	if assistantContent[0].(map[string]interface{})["cache_control"] == nil {
+		t.Fatalf("expected tool_use cache_control to round-trip, got %+v", assistantContent[0])
+	}
+	toolResultContent := messages[2].(map[string]interface{})["content"].([]interface{})
+	if toolResultContent[0].(map[string]interface{})["cache_control"] == nil {
+		t.Fatalf("expected tool_result cache_control to round-trip, got %+v", toolResultContent[0])
 	}
 }
