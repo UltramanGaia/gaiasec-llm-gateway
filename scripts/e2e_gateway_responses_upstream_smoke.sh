@@ -320,7 +320,37 @@ run_http_capture \
   "$ARTIFACT_DIR/responses-prompt-cache" \
   "POST" \
   "$GATEWAY_URL/v1/responses" \
-  "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"persist\",\"stream\":false}"
+  "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"24h\",\"stream\":false}"
+
+echo "==> Responses previous_response_id + prompt_cache non-stream"
+run_http_capture \
+  "$ARTIFACT_DIR/responses-previous-prompt-first" \
+  "POST" \
+  "$GATEWAY_URL/v1/responses" \
+  "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong\",\"stream\":false}"
+
+FIRST_PROMPT_RESPONSE_ID="$(python3 - "$ARTIFACT_DIR/responses-previous-prompt-first.headers" "$ARTIFACT_DIR/responses-previous-prompt-first.body" <<'PY'
+import json
+import pathlib
+import sys
+
+headers = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+body = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+if " 200 " not in headers:
+    print("")
+    raise SystemExit(0)
+payload = json.loads(body)
+print(payload.get("id", ""))
+PY
+)"
+
+if [ -n "$FIRST_PROMPT_RESPONSE_ID" ]; then
+  run_http_capture \
+    "$ARTIFACT_DIR/responses-previous-prompt-second" \
+    "POST" \
+    "$GATEWAY_URL/v1/responses" \
+    "{\"model\":\"$CONFIG_NAME\",\"input\":\"Reply with exactly: pong-2\",\"previous_response_id\":\"$FIRST_PROMPT_RESPONSE_ID\",\"prompt_cache_key\":\"cache-key\",\"prompt_cache_retention\":\"24h\",\"stream\":false}"
+fi
 
 python3 - "$ARTIFACT_DIR" <<'PY'
 import json
@@ -350,6 +380,7 @@ summary = {
     "responses_previous_response_structured_nonstream": classify_http(artifact_dir / "responses-previous-structured-second.headers"),
     "responses_previous_response_structured_stream": classify_http(artifact_dir / "responses-previous-structured-stream.headers"),
     "responses_prompt_cache_nonstream": classify_http(artifact_dir / "responses-prompt-cache.headers"),
+    "responses_previous_response_prompt_cache_nonstream": classify_http(artifact_dir / "responses-previous-prompt-second.headers"),
 }
 print(json.dumps(summary, ensure_ascii=True, indent=2))
 PY

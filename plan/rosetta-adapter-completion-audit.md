@@ -241,6 +241,9 @@
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-tool-stream-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-tool-stream-followup-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-smoke.md:1)
+- [reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-followup-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-followup-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md:1)
 - [reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md](/home/icsl/gaiasec/gaiasec-llm-gateway/reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md:1)
@@ -258,6 +261,9 @@
 - 但在当前实现真正允许的 `openai_responses` upstream 路由下，专用 real-smoke 已证明：baseline `/v1/responses` non-stream/stream 能通过，而 `previous_response_id` 的四类 follow-up 变体都会稳定分类为 `failed_upstream`，当前上游返回 `404 not found`
 - 第二个模型样本 `gpt-5.2` 的专用 `openai_responses` real-smoke 也已补上，证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
 - `gpt-5.2` 的专用 real-smoke 还补出了一条更强的 richer 多轮成功案例：`previous_response_id + structured output` 在 non-stream / stream 都可通过
+- `gpt-5.2` 的专用 real-smoke 还补出了 `previous_response_id + tool + stream` 的真实成功案例
+- `gpt-5.2` 的专用 real-smoke 还补出了 `prompt_cache_key/prompt_cache_retention` 的真实成功案例
+- `gpt-5.2` 的专用 real-smoke 也补出了一条多轮请求语义限制案例：`previous_response_id + prompt_cache_*` 当前会被上游拒绝
 - 第三个模型样本 `gpt-5.3-codex` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
 - 第四个模型样本 `gpt-5.4` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化
 - 第五个模型样本 `gpt-5.4-mini` 的专用 `openai_responses` real-smoke 也已补上，继续证明 `previous_response_id` follow-up 的真实行为会随模型/提供方组合变化

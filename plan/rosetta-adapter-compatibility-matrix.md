@@ -111,6 +111,9 @@
 | third-model real-upstream responses-upstream smoke (`gpt-5.3-codex`) | 部分支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt53codex-smoke.md` |
 | real-upstream `previous_response_id + structured output` smoke (`gpt-5.2`) | 支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt52-structured-followup-smoke.md` |
 | real-upstream `previous_response_id + structured output + stream` smoke (`gpt-5.2`) | 支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt52-structured-stream-followup-smoke.md` |
+| real-upstream `previous_response_id + tool + stream` smoke (`gpt-5.2`) | 支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt52-tool-stream-followup-smoke.md` |
+| real-upstream `prompt_cache_*` smoke (`gpt-5.2`) | 支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-smoke.md` |
+| real-upstream `previous_response_id + prompt_cache_*` classification (`gpt-5.2`) | 部分支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt52-prompt-cache-followup-smoke.md` |
 | real-upstream `previous_response_id + structured output` classification (`gpt-5.4-mini`) | 部分支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt54mini-structured-smoke.md` |
 | fourth-model real-upstream responses-upstream smoke (`gpt-5.4`) | 部分支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt54-smoke.md` |
 | fifth-model real-upstream responses-upstream smoke (`gpt-5.4-mini`) | 部分支持 | `scripts/e2e_gateway_responses_upstream_smoke.sh`, `reports/2026-06-01-gateway-responses-upstream-gpt54mini-smoke.md` |
